@@ -1,24 +1,48 @@
-# patch_vllm_ascend.py — 修 vllm-ascend 0.9.1rc1 在 verl 多 worker 下的通信组 bug
-# 现象: verl 多卡 rollout 初始化时 AssertionError: assert self.cpu_group is not None
-# 根因: init_ascend_model_parallel 按"引擎独占世界"视角建组——EP/ETP 组 ranks=[0]，
-#       而 verl 的 N 个 worker 共享全局通信域(world=N)，全局 rank>0 的 worker 不在
-#       [0] 组里 → cpu_group 停留 None → assert 崩（单卡 world=1 所以从不出事）
-# 修法: 改用全局 world size 建 ETP 组(覆盖所有 rank)，EP 拆成单例组。
-#       稠密模型(Qwen2.5)运行期不走 EP/ETP 通信，此改动安全；单卡行为不变。
-# 用法: python3 patch_vllm_ascend.py （幂等，可重复跑；改的是容器层文件，每个新作业开头跑一次）
-p = "/vllm-workspace/vllm-ascend/vllm_ascend/distributed/parallel_state.py"
-s = open(p).read()
+# patch_vllm_ascend.py — 昇腾 8 卡环境补丁（幂等，训练前自动执行）
+# 1. 修 vllm-ascend 0.9.1rc1 多 worker 通信组 bug (AssertionError: cpu_group is not None)
+# 2. 修 verl 8 卡 rollout DataProto.concat 严格对比 timing 导致的崩溃 (AssertionError: Conflicting values for meta_info key 'timing')
 
-if "expert_tensor_parallel_size = world_size" in s:
-    print("[patch_vllm_ascend] already patched, skip")
-else:
-    old = "    world_size = world_size or torch.distributed.get_world_size()"
-    new = ("    world_size = torch.distributed.get_world_size()\n"
-           "    expert_tensor_parallel_size = world_size\n"
-           "    expert_parallel_size = 1")
-    if old not in s:
-        print("[patch_vllm_ascend] WARN: pattern not found —— vllm-ascend 版本与预期不符，"
-              "可能新版本已自带修复，跳过补丁")
+import os
+import re
+
+# ----------------- 补丁 1: vllm-ascend 8 卡通信组 -----------------
+p = "/vllm-workspace/vllm-ascend/vllm_ascend/distributed/parallel_state.py"
+if os.path.exists(p):
+    s = open(p).read()
+    if "expert_tensor_parallel_size = world_size" in s:
+        print("[patch_vllm_ascend] [1/2] vllm-ascend already patched, skip")
     else:
-        open(p, "w").write(s.replace(old, new))
-        print("[patch_vllm_ascend] PATCHED OK:", p)
+        old = "    world_size = world_size or torch.distributed.get_world_size()"
+        new = ("    world_size = torch.distributed.get_world_size()\n"
+               "    expert_tensor_parallel_size = world_size\n"
+               "    expert_parallel_size = 1")
+        if old not in s:
+            print("[patch_vllm_ascend] [1/2] WARN: pattern not found in vllm-ascend, skip")
+        else:
+            open(p, "w").write(s.replace(old, new))
+            print("[patch_vllm_ascend] [1/2] PATCHED OK: vllm-ascend communication group fixed")
+else:
+    print("[patch_vllm_ascend] [1/2] Note: vllm-ascend path not found (not in container root), skip")
+
+# ----------------- 补丁 2: verl 多卡 rollout timing 对齐 -----------------
+try:
+    import verl
+    verl_protocol_path = os.path.join(os.path.dirname(verl.__file__), "protocol.py")
+    if os.path.exists(verl_protocol_path):
+        content = open(verl_protocol_path, "r", encoding="utf-8").read()
+        if 'if k != "timing":' in content or 'k == "timing"' in content:
+            print("[patch_vllm_ascend] [2/2] verl protocol timing patch already applied, skip")
+        else:
+            pattern = r'([ \t]*)assert merged_meta_info\[k\] == v(.*)'
+            match = re.search(pattern, content)
+            if match:
+                indent = match.group(1)
+                rest = match.group(2)
+                repl = f'{indent}if k != "timing":\n{indent}    assert merged_meta_info[k] == v{rest}'
+                new_content = re.sub(pattern, repl, content, count=1)
+                open(verl_protocol_path, "w", encoding="utf-8").write(new_content)
+                print("[patch_vllm_ascend] [2/2] PATCHED OK: verl protocol timing fix applied to", verl_protocol_path)
+            else:
+                print("[patch_vllm_ascend] [2/2] WARN: target assert line not found in", verl_protocol_path)
+except Exception as e:
+    print(f"[patch_vllm_ascend] [2/2] WARN: failed to patch verl protocol: {e}")
