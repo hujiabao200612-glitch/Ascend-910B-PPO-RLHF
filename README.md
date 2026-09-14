@@ -94,8 +94,19 @@ Ascend-910B-PPO-RLHF/
     ├── start_smoke.sh             # 自动化冒烟测试与保活
     ├── setup_env_msrl.sh          # MindSpeed-RL 备选环境安装脚本
     ├── mbpp_sanitized.jsonl       # 冒烟验证用小型测试集
-    └── rewards/
-        └── smoke_gsm8k.py         # 兼容 verl 0.6.1 签名的规则打分 Wrapper
+    ├── rewards/
+    │   └── smoke_gsm8k.py         # 兼容 verl 0.6.1 签名的规则打分 Wrapper
+    └── pipeline/                  # 数据清洗漏斗与沙箱判分器（RLVR 核心基石）
+        ├── config.py              # 全局配置中心（冻结模板、超时阈值、去重规则）
+        ├── extract.py             # 模型输出代码提取器（正则截取 ```python 块）
+        ├── sandbox.py             # 安全执行沙箱（进程树监控、超时强杀、无 shell 注入）
+        ├── score.py               # 判分器与奖励函数（pytest 部分分捕获、降级 runner）
+        ├── f1_template.py         # 筛 1：套用统一 Prompt 模板
+        ├── f2_verify.py           # 筛 2：标准答案过沙箱自洽性校验
+        ├── f3_dedup.py            # 筛 3：去重 + 截长 + 评测防泄漏过滤
+        └── tests/                 # 115 项自动化验收测试（100% 通过）
+            ├── test_extract.py        # 15 条提取模块单元测试
+            └── test_boundary_100.py   # 100 条全边界极限沙箱测试
 ```
 
 ---
@@ -145,6 +156,36 @@ bash prepare_gsm8k.sh
 > echo 'source /data/home/<你的学号>/project/envs/verl_env/bin/activate' >> ~/.bashrc
 > ```
 > 这样每次新开终端都会自动进入正确的 Python 环境。
+
+---
+
+## 📊 数据清洗与沙箱判分（D2 Pipeline）
+
+本仓库集成了完整的 RLVR 数据清洗漏斗与高并发安全沙箱，支持在本地 CPU 或服务器上完成全套过滤：
+
+```bash
+cd /data/home/<你的学号>/project
+
+# 1. 运行沙箱与提取器回归单测（115 项全边界测试，预期 100% Passed）
+python -m pytest pipeline/tests/ -v
+
+# 2. 筛 1：模板填充与 Prompt 规范化
+python pipeline/f1_template.py \
+    --input data/kodcode_candidates.jsonl \
+    --output data/step1_templated.jsonl
+
+# 3. 筛 2：官方解答过沙箱自洽性校验（淘汰坏题）
+python pipeline/f2_verify.py \
+    --input data/step1_templated.jsonl \
+    --output data/step2_kept.jsonl \
+    --rejects data/step2_rejects.jsonl
+
+# 4. 筛 3：去重 + 截长(>2000字) + 评测防泄漏过滤(>0.9)
+python pipeline/f3_dedup.py \
+    --input data/step2_kept.jsonl \
+    --output data/step3_verified_pool.jsonl \
+    --rejects data/step3_rejects.jsonl
+```
 
 ---
 
