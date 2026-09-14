@@ -200,10 +200,10 @@ tar -czvf rlvr_datasets.tar.gz \
 ```
 
 产出文件：
-- `data/rl_pool.jsonl`：黄金难度强化学习训练池（**实测产出 2,938 条**，通过率 10%~90%，完美匹配 PPO 7B 训练规模）；
+- `data/rl_pool.jsonl`：黄金难度强化学习训练池（**实测产出 4,518 条**，通过率 10%~90%，10,434 全池 100% 采样判分成果）；
 - `data/heldout.jsonl`：严格隔离的独立评测集（**恰好 200 条**，绝不进入训练池）；
-- `data/step4_rejects.jsonl`：淘汰集（**3,862 条**，两极淘汰题目）；
-- `rlvr_datasets.tar.gz`：全套数据集压缩包（在网页 VSCode 或 SCOW 文件管理中直接下载到本地）。
+- `data/step4_rejects.jsonl`：淘汰集（**5,716 条**，太简单 752 条、太难 4,964 条）；
+- `rlvr_datasets_full.tar.gz`：全量 10,434 题清洗沉淀数据集压缩包（在网页 VSCode 或 SCOW 文件管理中直接下载到本地）。
 
 ---
 
