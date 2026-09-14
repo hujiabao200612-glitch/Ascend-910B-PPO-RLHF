@@ -44,13 +44,24 @@ modelscope download --model qwen/Qwen2.5-7B-Instruct --local_dir ./Qwen2.5-7B-In
 modelscope download --model qwen/Qwen2.5-0.5B-Instruct --local_dir ./Qwen2.5-0.5B-Instruct
 ```
 
-### 2. code-server 下载与解压
-```bash
-cd /data/home/<你的学号>/project
-wget https://github.com/coder/code-server/releases/download/v4.137.0/code-server-4.137.0-linux-arm64.tar.gz
-tar -xzf code-server-4.137.0-linux-arm64.tar.gz
-# 解压完成后即生成 code-server-4.137.0-linux-arm64/ 目录，tar 包可删除以腾挪空间
-```
+### 2. code-server 下载、服务器内解压与移动就位
+`code-server` 用于在容器中启动网页版 VSCode 交互界面。由于安装包体积（~223MB）超出 GitHub 限制，需要在服务器内自行解压并把文件夹移动至 `project/` 目录下：
+
+1. **下载安装包**：
+   - 官方发布页下载：[code-server-4.137.0-linux-arm64.tar.gz](https://github.com/coder/code-server/releases/download/v4.137.0/code-server-4.137.0-linux-arm64.tar.gz)（约 223MB，注意必须为 **linux-arm64** 架构）；
+   - 上传至平台用户主目录 `/data/home/<你的学号>/`。
+2. **在服务器内解压并移动文件夹**：
+   ```bash
+   cd /data/home/<你的学号>
+   # 在服务器内解压
+   tar -xzf code-server-4.137.0-linux-arm64.tar.gz
+   # 将解压出的文件夹移动到 project/ 目录下
+   mv code-server-4.137.0-linux-arm64 project/
+   ```
+3. **核验最终路径**：
+   - 确保核心程序就位：
+     `/data/home/<你的学号>/project/code-server-4.137.0-linux-arm64/bin/code-server`
+   > **⚠️ 避坑提醒（平台网页解压陷阱）**：如果使用智算平台网页端「文件管理」自带的解压功能，平台可能会按文件名多建一层目录（如 `code-server-4.137.0-linux-arm64.tar/code-server-4.137.0-linux-arm64/`），此时务必手动将内层真正的 `code-server-4.137.0-linux-arm64` 文件夹 `mv` 移动到 `/data/home/<你的学号>/project/` 根目录下！
 
 ### 3. 冒烟数据集一键生成（免手动下载）
 仓库已内置生成脚本 [`project/prepare_gsm8k.sh`](file:///e:/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD/4_%E9%A1%B9%E7%9B%AE/RLHF/Ascend-910B-PPO-RLHF/project/prepare_gsm8k.sh)，在容器内虚拟环境建好后直接执行即可：

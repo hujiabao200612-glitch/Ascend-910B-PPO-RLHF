@@ -53,7 +53,7 @@
 chmod +x /data/home/<你的学号>/project/code-server-4.137.0-linux-arm64/bin/code-server && /data/home/<你的学号>/project/code-server-4.137.0-linux-arm64/bin/code-server --auth none
 ```
 
-（前提：`project/code-server-4.137.0-linux-arm64/` 已在挂载里——实测者的项目里有，队友从本地下载 code-server-4.137.0 的 arm64 tar 上传解压亦可，约 100MB。`--auth none` 免密码；平台会自动追加 `--bind-addr` 参数，code-server 正好认。）
+（前提：`code-server-4.137.0-linux-arm64.tar.gz` 上传后在服务器内解压，并将解压得到的 `code-server-4.137.0-linux-arm64` 文件夹移动到 `/data/home/<你的学号>/project/` 目录下；`--auth none` 免密码；平台会自动追加 `--bind-addr` 参数，code-server 正好认。）
 
 提交 → RUNNING → 点"连接" → VSCode 网页界面打开。
 
