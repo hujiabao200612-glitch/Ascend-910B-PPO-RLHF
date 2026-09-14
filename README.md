@@ -24,6 +24,44 @@
 
 ---
 
+## 📦 必须额外下载与准备的外部资源清单（.gitignore 忽略项说明）
+
+由于 GitHub 存在 **单文件 100MB 限制** 且代码仓库不适宜存储大模型权重与海量数据集，以下内容已在 `.gitignore` 中排除。**在新平台/新账户首次部署时，需按下方说明下载并上传至集群挂载点**：
+
+| 资源类别 | 文件/目录名称 | 预估大小 | 官方/镜像下载源 | 集群内放置路径 | 说明 |
+|---|---|---|---|---|---|
+| **大模型权重** | `Qwen2.5-7B-Instruct/` | ~15.2 GB | [ModelScope](https://modelscope.cn/models/qwen/Qwen2.5-7B-Instruct) / [HF-Mirror](https://hf-mirror.com/Qwen/Qwen2.5-7B-Instruct) | `/data/home/<你的学号>/Qwen2.5-7B-Instruct` | 主训练基座（共 13 个文件，含 4 个 safetensors 分片） |
+| **大模型权重** | `Qwen2.5-0.5B-Instruct/` | ~954 MB | [ModelScope](https://modelscope.cn/models/qwen/Qwen2.5-0.5B-Instruct) / [HF-Mirror](https://hf-mirror.com/Qwen/Qwen2.5-0.5B-Instruct) | `/data/home/<你的学号>/Qwen2.5-0.5B-Instruct` | 快速冒烟/拓扑验证基座（10 个文件） |
+| **Web IDE** | `code-server-4.137.0-linux-arm64` | ~223 MB (.tar) | [GitHub Releases v4.137.0](https://github.com/coder/code-server/releases/download/v4.137.0/code-server-4.137.0-linux-arm64.tar.gz) | `/data/home/<你的学号>/project/code-server-4.137.0-linux-arm64` | 容器内网页 VSCode 服务（解压后使用） |
+| **冒烟数据集** | `data/gsm8k/` | ~5 MB | 由 verl 内置工具在线生成 | `/data/home/<你的学号>/project/data/gsm8k/` | 包含 `train_300.parquet` 与 `test.parquet` |
+| **代码题候选库** | `kodcode_candidates.jsonl` | ~264 MB | 本地抽取 / [KodCode-V1](https://huggingface.co/datasets/kodcode/kodcode-v1) | `/data/home/<你的学号>/project/data/` | D2 阶段数据清洗使用（可本地清洗后传 `verified_pool.jsonl`） |
+
+### 1. 模型快速下载脚本（推荐在能高速联网的机器下载后上传）
+```bash
+# 推荐使用 ModelScope（国内镜像源极速下载，无 401 凭证问题）
+pip install modelscope
+modelscope download --model qwen/Qwen2.5-7B-Instruct --local_dir ./Qwen2.5-7B-Instruct
+modelscope download --model qwen/Qwen2.5-0.5B-Instruct --local_dir ./Qwen2.5-0.5B-Instruct
+```
+
+### 2. code-server 下载与解压
+```bash
+cd /data/home/<你的学号>/project
+wget https://github.com/coder/code-server/releases/download/v4.137.0/code-server-4.137.0-linux-arm64.tar.gz
+tar -xzf code-server-4.137.0-linux-arm64.tar.gz
+# 解压完成后即生成 code-server-4.137.0-linux-arm64/ 目录，tar 包可删除以腾挪空间
+```
+
+### 3. 冒烟数据集一键生成（免手动下载）
+仓库已内置生成脚本 [`project/prepare_gsm8k.sh`](file:///e:/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD/4_%E9%A1%B9%E7%9B%AE/RLHF/Ascend-910B-PPO-RLHF/project/prepare_gsm8k.sh)，在容器内虚拟环境建好后直接执行即可：
+```bash
+cd /data/home/<你的学号>/project
+bash prepare_gsm8k.sh
+# 自动生成 data/gsm8k/train.parquet, data/gsm8k/train_300.parquet, data/gsm8k/test.parquet
+```
+
+---
+
 ## 📂 仓库目录结构
 
 ```text
@@ -38,6 +76,7 @@ Ascend-910B-PPO-RLHF/
 ├── 北理工智算集群用户指南.docx       # 智算平台使用说明手册
 └── project/                       # 核心执行脚本与代码
     ├── patch_vllm_ascend.py       # vllm-ascend 0.9.1rc1 多卡通信组修复补丁
+    ├── prepare_gsm8k.sh           # GSM8K 冒烟数据集一键生成与裁剪脚本
     ├── smoke_ppo_05b.sh           # 0.5B PPO 冒烟测试脚本（单卡/多卡均可）
     ├── smoke_ppo_7b.sh            # 7B 8卡 PPO 训练验证脚本（微批自适应）
     ├── start_train.sh             # 无人值守正式训练入口（含保活与 code-server）
@@ -60,16 +99,18 @@ Ascend-910B-PPO-RLHF/
   ```
 * **注意**：用户名 / 密码**必须留空**（无需凭证，填写错误会导致 401 Unauthorized）。
 
-### 第 2 步：创建开发容器
-* 镜像：选择上一步拉取的镜像；
-* 算力：开发/冒烟选 1 卡，正式训练选 8 卡（910B3）；
-* 挂载点：勾选 `project` 目录以及模型目录（`Qwen2.5-7B-Instruct` / `Qwen2.5-0.5B-Instruct`）；
-* 运行命令：
-  ```bash
-  chmod +x /data/home/<你的学号>/project/code-server-4.137.0-linux-arm64/bin/code-server && /data/home/<你的学号>/project/code-server-4.137.0-linux-arm64/bin/code-server --auth none
-  ```
+### 第 2 步：上传模型与创建开发容器
+* 上传下载好的模型至平台个人根目录 `/data/home/<你的学号>/`；
+* 平台「应用」→「创建 VSCode」：
+  * **镜像**：选择上一步拉取的镜像；
+  * **算力**：开发/冒烟选 1 卡，正式训练选 8 卡（910B3）；
+  * **挂载点**：勾选 `project` 目录以及模型目录（`Qwen2.5-7B-Instruct` / `Qwen2.5-0.5B-Instruct`）；
+  * **运行命令**：
+    ```bash
+    chmod +x /data/home/<你的学号>/project/code-server-4.137.0-linux-arm64/bin/code-server && /data/home/<你的学号>/project/code-server-4.137.0-linux-arm64/bin/code-server --auth none
+    ```
 
-### 第 3 步：初始化环境（仅首次需建 venv，后续跨容器永久复用）
+### 第 3 步：容器内初始化（仅首次需建 venv，后续跨容器永久复用）
 进入容器终端：
 ```bash
 # 1. 验证原生镜像驱动
@@ -82,6 +123,10 @@ pip install verl==0.6.1
 
 # 3. 验证环境
 python3 -c "import torch, torch_npu, vllm, verl; print('OK', torch.npu.is_available())"
+
+# 4. 生成冒烟数据集
+cd /data/home/<你的学号>/project
+bash prepare_gsm8k.sh
 ```
 
 > **提示**：建议在 `~/.bashrc` 中写入：
