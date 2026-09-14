@@ -174,26 +174,41 @@ python pipeline/f1_template.py \
     --input data/kodcode_candidates.jsonl \
     --output data/step1_templated.jsonl
 
-# 3. 筛 2：官方解答过沙箱自洽性校验（推荐 16 核并发提速，15 分钟跑完）
-python pipeline/f2_verify.py \
+# 3. 筛 2：官方解答过沙箱自洽性校验（务必开启 16 核并发，实测 28 分钟 1.5 万条全量跑完）
+# 实测基准：读入 15000 / 保留 13871 / 淘汰 1129 / 通过率 92.5% / 平均耗时 1.875s
+nohup python pipeline/f2_verify.py \
     --input data/step1_templated.jsonl \
     --output data/step2_kept.jsonl \
     --rejects data/step2_rejects.jsonl \
-    --workers 16
+    --workers 16 > f2_verify.log 2>&1 &
 
-# 4. 筛 3：去重 + 截长(>2000字) + 评测防泄漏过滤(>0.9)（3 秒搞定）
+# 4. 筛 3：去重 + 截长(>2000字) + 评测防泄漏过滤(>0.9)（纯 CPU 计算，3 秒搞定）
+# 实测基准：读入 13871 / 保留 10434 / 淘汰 3437 (过长 3407，泄漏 30)
 python pipeline/f3_dedup.py \
     --input data/step2_kept.jsonl \
     --output data/step3_verified_pool.jsonl \
     --rejects data/step3_rejects.jsonl
 
-# 5. 筛 4：7B 基座 8 卡并行预采样与难度分级（产出 rl_pool.jsonl + heldout.jsonl）
+# 5. 筛 4：7B 基座 8 卡并行预采样与难度分级（产出 rl_pool.jsonl 2~4k + heldout.jsonl 200）
+# ① 推荐先跑 16 题快速冒烟（每卡 2 题，约 20~30 秒完成全链路核验）：
 python pipeline/f4_sample_filter.py \
+    --input data/step3_verified_pool.jsonl \
+    --rl_pool data/test_rl_pool.jsonl \
+    --heldout data/test_heldout.jsonl \
+    --model /data/home/<你的学号>/Qwen2.5-7B-Instruct \
+    --gpus 8 \
+    --max_problems 16
+
+# ② 正式全量 8 卡并行后台运行（10,434 题，8 卡总吞吐 ~1800 tok/s，约 40~60 分钟）：
+nohup python pipeline/f4_sample_filter.py \
     --input data/step3_verified_pool.jsonl \
     --rl_pool data/rl_pool.jsonl \
     --heldout data/heldout.jsonl \
+    --rejects data/step4_rejects.jsonl \
     --model /data/home/<你的学号>/Qwen2.5-7B-Instruct \
-    --gpus 8
+    --gpus 8 \
+    --batch_size 50 \
+    --gpu_memory_utilization 0.6 > f4_filter.log 2>&1 &
 ```
 
 ---
@@ -228,8 +243,13 @@ bash smoke_ppo_7b.sh trainer.n_gpus_per_node=8 2>&1 | tee smoke_8c_7b.log
 | 1 | `ModuleNotFoundError: No module named 'verl'` | 新开终端未激活持久 venv，使用了镜像默认 Python | 运行 `source /data/home/<学号>/project/envs/verl_env/bin/activate` 或使用本仓库脚本（内置自动激活） |
 | 2 | `AssertionError: assert self.cpu_group is not None` | vllm-ascend 0.9.1rc1 通信组只分配了 rank 0 | 执行 `python3 patch_vllm_ascend.py` 打入多 worker 通信组补丁 |
 | 3 | 算子执行报 `ADD_TO_LAUNCHER_LIST` 失败 | 手动 source 了外置的 CANN `set_env.sh` 导致环境冲突 | **严禁手动 source 任何 CANN 环境变量**，镜像自带的 8.1.rc1 已经就绪 |
-| 4 | pip 报错 `AssertionError: pyc_path` | dpc 网络文件系统与 pyc 预编译冲突 | 安装前执行 `export PIP_NO_COMPILE=1` |
+| 4 | pip 报错 `AssertionError: pyc_path` | dpc 网络文件系统与 pyc 预编译冲突 | 安装前执行 `export PIP_NO_COMPILE=1`，安装 verl 与 pytest |
 | 5 | 断网 / 关闭网页终端导致训练中断 | 终端 session 被杀死 | 使用无人值守入口 `start_train.sh` 或后台运行 `nohup ... &` |
+| 6 | GitHub clone 报 `HTTP/2 stream 1 was not closed cleanly` | 国内服务器直连 GitHub 网络抖动阻断 | 执行 `git config --global http.version HTTP/1.1` 或使用加速镜像 `https://ghfast.top/https://raw.githubusercontent.com/...` |
+| 7 | vLLM 实例加载报错 `unexpected keyword argument 'tensor_model_parallel_size'` | 混淆了 verl 配置键名与 vLLM 原生 Python API 参数名 | 原生 vLLM 构造函数形参为 `tensor_parallel_size=1`（单卡亦可直接缺省） |
+| 8 | 多卡采样时主进程永久卡死在 Queue 获取 | `multiprocessing.Queue` 跨进程传输上万条大字典填满系统 buffer | 采用 Worker 独立分块直写文件 `_tmp_f4_worker_{gpu_id}.jsonl`，主进程安全合并 |
+| 9 | 昇腾 910B 推理报 HBM 碎片或 OOM 告警 | `gpu_memory_utilization` 设过高 (0.85+) 导致挤占算子及驱动显存 | 设为 `0.6` 即可（14.25GB 权重 + 24GB KV Cache，单卡 64GB 非常宽裕） |
+
 
 ---
 

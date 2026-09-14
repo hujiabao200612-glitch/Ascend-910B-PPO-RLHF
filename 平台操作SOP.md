@@ -68,8 +68,10 @@ python3 -c "import torch, torch_npu, vllm; print(torch.__version__, torch.npu.is
 # 2) 持久 venv（建在挂载目录，跨作业/跨容器永驻；--system-site-packages 复用镜像的 torch）
 python3 -m venv --system-site-packages /data/home/<你的学号>/project/envs/verl_env
 source /data/home/<你的学号>/project/envs/verl_env/bin/activate
-pip install verl==0.6.1
-python3 -c "import verl; print('verl OK')"
+# ⚠️ 网络存储盘装包必须禁用 pyc 编译，同时安装 verl 与沙箱判分必须的 pytest
+export PIP_NO_COMPILE=1
+pip install verl==0.6.1 pytest
+python3 -c "import verl, pytest; print('verl & pytest OK')"
 ```
 
 ## 第 5 步：数据与奖励文件（1 分钟确认 + 缺了按 SOP 第 3 节补）
@@ -93,6 +95,66 @@ bash smoke_ppo_05b.sh \
 **实测基线**（0.5B 冒烟，供对照）：每步 23~27 秒；rewards/mean 0.0156（64 条里 1 条对）、max 1.0；response clip_ratio 0.64~0.69（2/3 撞 256 上限——正式训练提到 512+）；MFU 0.06~0.075。
 
 **退出时的 TBE ERROR 噪音**：无害（CANN 编译子进程在主进程退出时的清理抱怨）。判别法：**结尾出现 = 无害；训练中段出现且进程消失 = 真故障**。
+
+---
+
+## 第 7 步：D2 代码任务数据清洗与难度分级（8 卡全流程实测通过）
+
+如果进入正式的代码 RLVR 任务（取代 GSM8K 玩具数据），使用本套已经过全量 1.5 万条实跑验证的数据清洗管线：
+
+```bash
+cd /data/home/<你的学号>/project
+
+# 1. 回归自检：运行沙箱与提取器回归单测（115 项全边界测试，100% 全部通过）
+python -m pytest pipeline/tests/ -v
+
+# 2. 筛 1：Prompt 规范化与字段瘦身（15,000 条全入库，约 10 秒）
+python pipeline/f1_template.py \
+    --input data/kodcode_candidates.jsonl \
+    --output data/step1_templated.jsonl
+
+# 3. 筛 2：官方解答过沙箱自洽性校验（务必开启 16 核并发，28 分钟全量跑完）
+# 实测基准：读入 15000 / 保留 13871 / 淘汰 1129 / 通过率 92.5% / 平均耗时 1.875s
+nohup python pipeline/f2_verify.py \
+    --input data/step1_templated.jsonl \
+    --output data/step2_kept.jsonl \
+    --rejects data/step2_rejects.jsonl \
+    --workers 16 > f2_verify.log 2>&1 &
+# 实时看进度：tail -f f2_verify.log
+
+# 4. 筛 3：去重 + 截长(>2000字符) + 泄漏过滤(>0.9)（纯 CPU 计算，3 秒搞定）
+# 实测基准：读入 13871 / 保留 10434 / 淘汰 3437 (过长 3407，泄漏 30)
+python pipeline/f3_dedup.py \
+    --input data/step2_kept.jsonl \
+    --output data/step3_verified_pool.jsonl \
+    --rejects data/step3_rejects.jsonl
+
+# 5. 筛 4：7B 基座 8 卡并行预采样与难度分级（产出最终 rl_pool.jsonl + heldout.jsonl）
+# 推荐先用 16 题极速冒烟验证（每卡 2 题，约 20~30 秒测通）：
+python pipeline/f4_sample_filter.py \
+    --input data/step3_verified_pool.jsonl \
+    --rl_pool data/test_rl_pool.jsonl \
+    --heldout data/test_heldout.jsonl \
+    --model ../Qwen2.5-7B-Instruct \
+    --gpus 8 \
+    --max_problems 16
+
+# 冒烟通过后，启动全量 8 卡并行正式运行（10,434 题，8 卡总吞吐 ~1800 tok/s，约 40~60 分钟）：
+nohup python pipeline/f4_sample_filter.py \
+    --input data/step3_verified_pool.jsonl \
+    --rl_pool data/rl_pool.jsonl \
+    --heldout data/heldout.jsonl \
+    --rejects data/step4_rejects.jsonl \
+    --model ../Qwen2.5-7B-Instruct \
+    --gpus 8 \
+    --batch_size 50 \
+    --gpu_memory_utilization 0.6 > f4_filter.log 2>&1 &
+# 实时监控：tail -f f4_filter.log
+```
+
+产出文件：
+- `data/rl_pool.jsonl`：黄金难度强化学习训练池（2,000 ~ 4,000 条，通过率 10%~90%）；
+- `data/heldout.jsonl`：严格隔离的独立评测集（200 条，绝不进入训练池）。
 
 ---
 
@@ -180,6 +242,11 @@ bash smoke_ppo_7b.sh trainer.n_gpus_per_node=8 2>&1 | tee smoke_8c_7b.log
 | 6 | 首次 import torch 卡几分钟 | 字节码缓存首次写入 | 耐心等完（或 compileall 预编译），**别 Ctrl+C** |
 | 7 | pip 装的包随容器蒸发 | 新作业里 verl 不见了 | 每次作业开头重装（1 分钟）或用持久 venv |
 | 8 | source 挂载里的 CANN set_env.sh | 所有算子 ADD_TO_LAUNCHER_LIST 失败 | **永远不要 source**——镜像原生 CANN 就是正确版本 |
-| 9 | GitHub clone 抽风 | curl 16 / 连接超时 | `git config --global http.version HTTP/1.1`；或 codeload tar 绕过 |
+| 9 | GitHub clone 抽风 | curl 16 / HTTP/2 stream 1 was not closed cleanly | `git config --global http.version HTTP/1.1`；或使用国内高速镜像 `https://ghfast.top/https://github.com/...` / `https://ghfast.top/https://raw.githubusercontent.com/...` |
 | 10 | HF 下载 401/失败 | hf_transfer/Xet 协议走不了镜像 | `HF_ENDPOINT=https://hf-mirror.com` + `HF_HUB_DISABLE_XET=1` |
 | 11 | 关电脑/断网后终端里的训练死了 | code-server 断开回收终端，前台进程被终止 | 后台跑：`nohup bash xx.sh > xx.log 2>&1 &`（有 tmux 更稳）；过夜正式跑直接写进作业「运行命令」（start_smoke.sh 模式）+ `trainer.save_freq>0` 存挂载目录 |
+| 12 | 筛 2 单线程验证 1.5 万条耗时数小时 | 单核逐题过沙箱 pytest 吞吐低 | 启用 `--workers 16` 多线程并发，利用内置滑动窗口在 28 分钟内全量跑完 |
+| 13 | 沙箱判分报找不到 pytest | 虚拟环境只装了 verl，漏装测试驱动器 | `export PIP_NO_COMPILE=1; pip install pytest` |
+| 14 | vLLM 实例加载报 unexpected keyword argument | 误把 verl 的 `tensor_model_parallel_size` 当做 vLLM 的初始化形参 | 原生 vLLM 参数名为 `tensor_parallel_size=1`（单卡亦可直接缺省） |
+| 15 | 8 卡并行采样多进程 Queue 管道卡死 | `multiprocessing.Queue` 跨进程传输大对象填满 OS 管道 buffer | 每个 Worker 独立直写临时文件 `_tmp_f4_worker_{gpu_id}.jsonl`，主进程安全汇总 |
+| 16 | 昇腾 910B 推理时 HBM 碎片 / OOM 告警 | `gpu_memory_utilization` 设为 0.85+ 挤占算子与系统保留内存 | 设为 `0.6` 即可（14.25GB 权重 + 24GB KV Cache，单卡 64GB 非常宽裕） |
