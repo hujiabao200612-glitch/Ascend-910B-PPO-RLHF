@@ -50,8 +50,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Dict, List, Optional
+
+_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
 
 __all__ = ["verify_one", "run_filter2"]
 

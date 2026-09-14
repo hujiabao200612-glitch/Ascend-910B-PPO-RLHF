@@ -49,6 +49,10 @@ import subprocess
 import sys
 from typing import Dict, List, Optional, Tuple
 
+_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
+
 __all__ = ["score_kernel", "score"]
 
 # ---------------------------------------------------------------------------
