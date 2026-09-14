@@ -174,17 +174,26 @@ python pipeline/f1_template.py \
     --input data/kodcode_candidates.jsonl \
     --output data/step1_templated.jsonl
 
-# 3. 筛 2：官方解答过沙箱自洽性校验（淘汰坏题）
+# 3. 筛 2：官方解答过沙箱自洽性校验（推荐 16 核并发提速，15 分钟跑完）
 python pipeline/f2_verify.py \
     --input data/step1_templated.jsonl \
     --output data/step2_kept.jsonl \
-    --rejects data/step2_rejects.jsonl
+    --rejects data/step2_rejects.jsonl \
+    --workers 16
 
-# 4. 筛 3：去重 + 截长(>2000字) + 评测防泄漏过滤(>0.9)
+# 4. 筛 3：去重 + 截长(>2000字) + 评测防泄漏过滤(>0.9)（3 秒搞定）
 python pipeline/f3_dedup.py \
     --input data/step2_kept.jsonl \
     --output data/step3_verified_pool.jsonl \
     --rejects data/step3_rejects.jsonl
+
+# 5. 筛 4：7B 基座 8 卡并行预采样与难度分级（产出 rl_pool.jsonl + heldout.jsonl）
+python pipeline/f4_sample_filter.py \
+    --input data/step3_verified_pool.jsonl \
+    --rl_pool data/rl_pool.jsonl \
+    --heldout data/heldout.jsonl \
+    --model /data/home/<你的学号>/Qwen2.5-7B-Instruct \
+    --gpus 8
 ```
 
 ---

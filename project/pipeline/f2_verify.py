@@ -207,11 +207,11 @@ def run_filter2(
     rejects_path: str,
     timeout_s: int = DEFAULT_TIMEOUT_S,
     enhanced: bool = False,
+    workers: int = 1,
 ) -> Dict[str, int]:
     """执行筛 2 全流程：逐条验证 → 分写「保留 / 淘汰」两个 jsonl。
 
-    返回统计字典供 _main 打印（§7.5：读入 / 保留 / 淘汰 / 超时 / 沙箱错 / 缺字段 / 坏行 /
-    平均耗时）。每条输入原样保留并追加 verify 子对象（假设 D：统计写回）。
+    支持多线程并发执行（workers > 1），大幅加速清洗流程。
     """
     stats = {
         "read": 0,
@@ -227,45 +227,128 @@ def run_filter2(
         "duration_sum_s": 0.0,
     }
 
+    import concurrent.futures
+
     with open(input_path, "r", encoding="utf-8") as fin, open(
         keep_path, "w", encoding="utf-8", newline="\n"
     ) as fkeep, open(rejects_path, "w", encoding="utf-8", newline="\n") as frej:
-        for index, raw in enumerate(fin):
-            raw = raw.strip()
-            if not raw:
-                continue
-            stats["read"] += 1
 
-            try:
-                record = json.loads(raw)
-                if not isinstance(record, dict):
-                    raise ValueError("每行必须是 JSON 对象")
-            except Exception:
-                stats["bad_lines"] += 1
-                stats["rejected"] += 1
-                frej.write(
-                    json.dumps(
-                        {"input_index": index, "verify": {"passed": False, "reason": "bad_json"}},
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-                continue
-
-            verify = verify_one(record, timeout_s=timeout_s, enhanced=enhanced)
-            stats["duration_sum_s"] += verify["duration_s"]
-            if verify["reason"]:
-                stats[verify["reason"]] = stats.get(verify["reason"], 0) + 1
-
-            out = dict(record)  # 原样保留全部字段（prompt/test/solution/...）
+        def _record_result(record: Dict, verify: Dict) -> None:
+            stats["duration_sum_s"] += verify.get("duration_s", 0.0)
+            reason = verify.get("reason")
+            if reason:
+                stats[reason] = stats.get(reason, 0) + 1
+            out = dict(record)
             out["verify"] = verify
-
-            if verify["passed"]:
+            if verify.get("passed", False):
                 stats["kept"] += 1
                 fkeep.write(json.dumps(out, ensure_ascii=False) + "\n")
             else:
                 stats["rejected"] += 1
                 frej.write(json.dumps(out, ensure_ascii=False) + "\n")
+            if stats["read"] % 10 == 0:
+                fkeep.flush()
+                frej.flush()
+            if stats["read"] % 200 == 0:
+                print(
+                    "[f2_verify] 实时进度: 已处理 %d 条 | 保留: %d | 淘汰: %d (%.1f%%)"
+                    % (
+                        stats["read"],
+                        stats["kept"],
+                        stats["rejected"],
+                        (stats["kept"] / stats["read"] * 100.0) if stats["read"] else 0.0,
+                    ),
+                    flush=True,
+                )
+
+        if workers <= 1:
+            for index, raw in enumerate(fin):
+                raw = raw.strip()
+                if not raw:
+                    continue
+                stats["read"] += 1
+                try:
+                    record = json.loads(raw)
+                    if not isinstance(record, dict):
+                        raise ValueError("每行必须是 JSON 对象")
+                except Exception:
+                    stats["bad_lines"] += 1
+                    stats["rejected"] += 1
+                    frej.write(
+                        json.dumps(
+                            {"input_index": index, "verify": {"passed": False, "reason": "bad_json"}},
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                    continue
+                verify = verify_one(record, timeout_s=timeout_s, enhanced=enhanced)
+                _record_result(record, verify)
+        else:
+            # 多线程滑动窗口：同时最多容纳 workers * 4 个任务，内存占用恒定
+            max_pending = max(4, workers * 4)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+                future_map = {}
+                for index, raw in enumerate(fin):
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    stats["read"] += 1
+                    try:
+                        record = json.loads(raw)
+                        if not isinstance(record, dict):
+                            raise ValueError("每行必须是 JSON 对象")
+                    except Exception:
+                        stats["bad_lines"] += 1
+                        stats["rejected"] += 1
+                        frej.write(
+                            json.dumps(
+                                {"input_index": index, "verify": {"passed": False, "reason": "bad_json"}},
+                                ensure_ascii=False,
+                            )
+                            + "\n"
+                        )
+                        continue
+
+                    fut = executor.submit(verify_one, record, timeout_s, enhanced)
+                    future_map[fut] = record
+
+                    if len(future_map) >= max_pending:
+                        # 弹出一个已完成的任务
+                        done_set, _ = concurrent.futures.wait(
+                            future_map.keys(), return_when=concurrent.futures.FIRST_COMPLETED
+                        )
+                        for done_fut in done_set:
+                            rec = future_map.pop(done_fut)
+                            try:
+                                ver = done_fut.result()
+                            except Exception as exc:
+                                ver = {
+                                    "passed": False,
+                                    "returncode": -1,
+                                    "timed_out": False,
+                                    "duration_s": 0.0,
+                                    "reason": "sandbox_error:%s" % type(exc).__name__,
+                                }
+                            _record_result(rec, ver)
+
+                # 处理剩余所有任务
+                for done_fut in concurrent.futures.as_completed(future_map.keys()):
+                    rec = future_map[done_fut]
+                    try:
+                        ver = done_fut.result()
+                    except Exception as exc:
+                        ver = {
+                            "passed": False,
+                            "returncode": -1,
+                            "timed_out": False,
+                            "duration_s": 0.0,
+                            "reason": "sandbox_error:%s" % type(exc).__name__,
+                        }
+                    _record_result(rec, ver)
+
+        fkeep.flush()
+        frej.flush()
 
     return stats
 
@@ -292,6 +375,9 @@ def _build_argparser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enhanced", action="store_true", help="启用增强版沙箱（仅 Linux 生效，Windows 自动降级）"
     )
+    parser.add_argument(
+        "--workers", type=int, default=1, help="并发线程数（默认 1，服务器推荐 16）"
+    )
     return parser
 
 
@@ -303,7 +389,12 @@ def _main(argv: Optional[List[str]] = None) -> int:
     args = _build_argparser().parse_args(argv)
     timeout_s = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT_S
     stats = run_filter2(
-        args.input, args.output, args.rejects, timeout_s=timeout_s, enhanced=args.enhanced
+        args.input,
+        args.output,
+        args.rejects,
+        timeout_s=timeout_s,
+        enhanced=args.enhanced,
+        workers=args.workers,
     )
     avg = (stats["duration_sum_s"] / stats["read"]) if stats["read"] else 0.0
     print(
@@ -321,7 +412,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
             stats["no_tests"],
             stats["bad_lines"],
             avg,
-        )
+        ),
+        flush=True,
     )
     return 0
 
