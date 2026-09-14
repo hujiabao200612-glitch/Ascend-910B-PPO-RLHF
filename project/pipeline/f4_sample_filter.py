@@ -73,7 +73,7 @@ def _worker_sample_and_score(
     try:
         llm = LLM(
             model=model_path,
-            tensor_model_parallel_size=1,
+            tensor_parallel_size=1,
             trust_remote_code=True,
             gpu_memory_utilization=gpu_memory_utilization,
         )
