@@ -88,11 +88,28 @@ def _worker_sample_and_score(
     )
 
     total_chunks = len(records_chunk)
-    print(f"[Worker-{gpu_id}] 就绪！开始分批处理共 {total_chunks} 道题目 (batch_size={batch_size}) ...", flush=True)
+
+    # 自动断点检测：统计已完成题数，实现无缝断点续跑
+    already_done = 0
+    if os.path.exists(worker_out_path):
+        with open(worker_out_path, "r", encoding="utf-8") as fr:
+            for line in fr:
+                if line.strip():
+                    already_done += 1
+
+    if already_done >= total_chunks:
+        print(f"[Worker-{gpu_id}] 本卡所有 {total_chunks} 题此前已全部完成，无需重跑！", flush=True)
+        return
+
+    if already_done > 0:
+        print(f"[Worker-{gpu_id}] ⚡ 成功检测到断点！已完成 {already_done}/{total_chunks} 题，从第 {already_done + 1} 题继续运行...", flush=True)
+    else:
+        print(f"[Worker-{gpu_id}] 就绪！开始分批处理共 {total_chunks} 道题目 (batch_size={batch_size}) ...", flush=True)
 
     os.makedirs(os.path.dirname(os.path.abspath(worker_out_path)), exist_ok=True)
-    with open(worker_out_path, "w", encoding="utf-8") as fw:
-        for b_start in range(0, total_chunks, batch_size):
+    open_mode = "a" if already_done > 0 else "w"
+    with open(worker_out_path, open_mode, encoding="utf-8") as fw:
+        for b_start in range(already_done, total_chunks, batch_size):
             b_chunk = records_chunk[b_start : b_start + batch_size]
             b_prompts = [rec["prompt"] for rec in b_chunk]
             try:
