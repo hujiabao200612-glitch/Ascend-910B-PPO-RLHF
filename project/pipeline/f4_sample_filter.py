@@ -51,13 +51,14 @@ def _worker_sample_and_score(
     gpu_id: int,
     records_chunk: List[Dict],
     model_path: str,
-    n_samples: int,
-    temperature: float,
-    max_tokens: int,
-    gpu_memory_utilization: float,
-    result_queue,
+    worker_out_path: str,
+    n_samples: int = 8,
+    temperature: float = 1.0,
+    max_tokens: int = 768,
+    gpu_memory_utilization: float = 0.6,
+    batch_size: int = 50,
 ) -> None:
-    """子进程工作函数：单张卡加载 vLLM 实例，完成数据块的采样和判分。"""
+    """子进程工作函数：单张卡加载 vLLM 实例，分批采样并实时过沙箱判分，直写本地文件。"""
     # 绑定特定 NPU/GPU 显卡
     os.environ["ASCEND_RT_VISIBLE_DEVICES"] = str(gpu_id)
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -66,7 +67,6 @@ def _worker_sample_and_score(
         from vllm import LLM, SamplingParams
     except ImportError:
         print(f"[Worker-{gpu_id}][ERROR] 未安装 vLLM，请在 verl_env 环境下运行！", file=sys.stderr)
-        result_queue.put((gpu_id, []))
         return
 
     print(f"[Worker-{gpu_id}] 正在卡 {gpu_id} 上加载模型: {model_path} ...", flush=True)
@@ -79,7 +79,6 @@ def _worker_sample_and_score(
         )
     except Exception as exc:
         print(f"[Worker-{gpu_id}][ERROR] 模型加载失败: {exc}", file=sys.stderr)
-        result_queue.put((gpu_id, []))
         return
 
     sampling_params = SamplingParams(
@@ -88,26 +87,32 @@ def _worker_sample_and_score(
         max_tokens=max_tokens,
     )
 
-    prompts = [rec["prompt"] for rec in records_chunk]
-    print(f"[Worker-{gpu_id}] 开始批量采样 {len(prompts)} 道题目（每题 {n_samples} 次）...", flush=True)
-    outputs = llm.generate(prompts, sampling_params)
+    total_chunks = len(records_chunk)
+    print(f"[Worker-{gpu_id}] 就绪！开始分批处理共 {total_chunks} 道题目 (batch_size={batch_size}) ...", flush=True)
 
-    processed_results = []
-    print(f"[Worker-{gpu_id}] 采样完成，正在调用沙箱计算 pass rate...", flush=True)
-    for idx, (rec, out) in enumerate(zip(records_chunk, outputs), start=1):
-        sample_texts = [output.text for output in out.outputs]
-        pass_rate, passed_count = evaluate_question_samples(rec, sample_texts)
-        
-        result_item = dict(rec)
-        result_item["sample_pass_rate"] = round(pass_rate, 4)
-        result_item["sample_passed_count"] = passed_count
-        result_item["sample_total"] = len(sample_texts)
-        processed_results.append(result_item)
+    os.makedirs(os.path.dirname(os.path.abspath(worker_out_path)), exist_ok=True)
+    with open(worker_out_path, "w", encoding="utf-8") as fw:
+        for b_start in range(0, total_chunks, batch_size):
+            b_chunk = records_chunk[b_start : b_start + batch_size]
+            b_prompts = [rec["prompt"] for rec in b_chunk]
+            try:
+                b_outputs = llm.generate(b_prompts, sampling_params)
+            except Exception as exc:
+                print(f"[Worker-{gpu_id}][ERROR] generate 异常: {exc}", file=sys.stderr)
+                continue
 
-        if idx % 50 == 0 or idx == len(records_chunk):
-            print(f"[Worker-{gpu_id}] 进度: {idx}/{len(records_chunk)} 完成", flush=True)
+            for rec, out in zip(b_chunk, b_outputs):
+                sample_texts = [output.text for output in out.outputs]
+                pass_rate, passed_count = evaluate_question_samples(rec, sample_texts)
+                result_item = dict(rec)
+                result_item["sample_pass_rate"] = round(pass_rate, 4)
+                result_item["sample_passed_count"] = passed_count
+                result_item["sample_total"] = len(sample_texts)
+                fw.write(json.dumps(result_item, ensure_ascii=False) + "\n")
+            fw.flush()
+            print(f"[Worker-{gpu_id}] 进度: {min(b_start + batch_size, total_chunks)}/{total_chunks} 完成", flush=True)
 
-    result_queue.put((gpu_id, processed_results))
+    print(f"[Worker-{gpu_id}] 全部完成！产出写入: {worker_out_path}", flush=True)
 
 
 def run_filter4_parallel(
@@ -116,14 +121,16 @@ def run_filter4_parallel(
     heldout_path: str,
     rejects_path: str,
     model_path: str,
-    gpus: int = 1,
+    gpus: int = 8,
+    max_problems: Optional[int] = None,
+    batch_size: int = 50,
     n_samples: int = 8,
     temperature: float = 1.0,
     max_tokens: int = 768,
     pass_rate_min: float = 0.1,
     pass_rate_max: float = 0.9,
     n_heldout: int = 200,
-    gpu_memory_utilization: float = 0.85,
+    gpu_memory_utilization: float = 0.6,
     seed: int = 42,
 ) -> None:
     """筛 4 主执行流程：多卡数据并行采样 + 难度分级。"""
@@ -136,6 +143,10 @@ def run_filter4_parallel(
             if line:
                 records.append(json.loads(line))
 
+    if max_problems is not None and max_problems > 0:
+        records = records[:max_problems]
+        print(f"[f4_sample_filter] 开启 --max_problems 截断，本次采样前 {len(records)} 道题目")
+
     total_records = len(records)
     print(f"[f4_sample_filter] 共载入 {total_records} 道题目，分配至 {gpus} 张显卡并行处理...")
 
@@ -144,33 +155,46 @@ def run_filter4_parallel(
 
     import multiprocessing as mp
     mp.set_start_method("spawn", force=True)
-    result_queue = mp.Queue()
     processes = []
+    worker_files = []
 
+    out_dir = os.path.dirname(os.path.abspath(rl_pool_path))
     for gpu_id in range(gpus):
+        worker_out = os.path.join(out_dir, f"_tmp_f4_worker_{gpu_id}.jsonl")
+        worker_files.append(worker_out)
         p = mp.Process(
             target=_worker_sample_and_score,
             args=(
                 gpu_id,
                 chunks[gpu_id],
                 model_path,
+                worker_out,
                 n_samples,
                 temperature,
                 max_tokens,
                 gpu_memory_utilization,
-                result_queue,
+                batch_size,
             ),
         )
         p.start()
         processes.append(p)
 
-    all_results = []
-    for _ in range(gpus):
-        gpu_id, res = result_queue.get()
-        all_results.extend(res)
-
     for p in processes:
         p.join()
+
+    # 汇总所有 worker 的结果
+    all_results = []
+    for wf in worker_files:
+        if os.path.exists(wf):
+            with open(wf, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        all_results.append(json.loads(line))
+            try:
+                os.remove(wf)
+            except OSError:
+                pass
 
     print(f"[f4_sample_filter] 全量 {len(all_results)} 道题目采样与判分已完成，正在分流过滤...")
 
@@ -184,7 +208,7 @@ def run_filter4_parallel(
 
     with open(rejects_path, "w", encoding="utf-8") as frej:
         for item in all_results:
-            pr = item["sample_pass_rate"]
+            pr = item.get("sample_pass_rate", 0.0)
             if pr > pass_rate_max:
                 too_easy_count += 1
                 item["filter_reason"] = "too_easy"
@@ -231,13 +255,15 @@ def main():
     parser.add_argument("--rejects", default="data/step4_rejects.jsonl", help="淘汰集输出路径")
     parser.add_argument("--model", default="Qwen2.5-7B-Instruct", help="7B 模型路径")
     parser.add_argument("--gpus", type=int, default=8, help="并行卡数（默认 8 卡，可传 1~8）")
+    parser.add_argument("--max_problems", type=int, default=None, help="最大采样题数（默认全部，可传如 6000 快速收敛 2~3k 黄金池）")
+    parser.add_argument("--batch_size", type=int, default=50, help="每批次推理题数（默认 50）")
     parser.add_argument("--n_samples", type=int, default=8, help="每题采样次数（默认 8）")
     parser.add_argument("--temperature", type=float, default=1.0, help="采样温度（默认 1.0）")
     parser.add_argument("--max_tokens", type=int, default=768, help="最大生成 token 数")
     parser.add_argument("--pass_rate_min", type=float, default=0.1, help="最低保留通过率")
     parser.add_argument("--pass_rate_max", type=float, default=0.9, help="最高保留通过率")
     parser.add_argument("--n_heldout", type=int, default=200, help="留出评测题数")
-    parser.add_argument("--gpu_memory_utilization", type=float, default=0.85, help="显存使用上限比例")
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.6, help="显存使用上限比例（默认 0.6 安全值）")
 
     args = parser.parse_args()
 
@@ -248,6 +274,8 @@ def main():
         rejects_path=args.rejects,
         model_path=args.model,
         gpus=args.gpus,
+        max_problems=args.max_problems,
+        batch_size=args.batch_size,
         n_samples=args.n_samples,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
