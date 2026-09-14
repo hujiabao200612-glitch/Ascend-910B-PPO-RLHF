@@ -152,9 +152,58 @@ nohup python pipeline/f4_sample_filter.py \
 # 实时监控：tail -f f4_filter.log
 ```
 
+#### 🌟 筛 4 提前收割与正式结算（实测有效命令）
+当 8 卡累计处理题数达到 6,000 题、黄金池已达 2,670 条时（已充分覆盖 2k~4k 需求且平台作业即将到期），可直接运行以下自包含 Python 命令一键收割结算，无需等待剩余题目：
+
+```bash
+cd /data/home/<你的学号>/project
+
+# 1. 停掉后台筛选进程
+pkill -9 -f f4_sample_filter
+
+# 2. 一键合并各 Worker 临时分片并切分黄金题库（实测 100% 成功）
+python3 -c "
+import glob, json, os, random
+random.seed(42)
+files = sorted(glob.glob('data/_tmp_f4_worker_*.jsonl'))
+all_data = [json.loads(l) for f in files for l in open(f, encoding='utf-8') if l.strip()]
+
+golden, easy, hard = [], [], []
+for item in all_data:
+    pr = item.get('sample_pass_rate', 0.0)
+    if pr > 0.9: easy.append(item)
+    elif pr < 0.1: hard.append(item)
+    else: golden.append(item)
+
+random.shuffle(golden)
+heldout = golden[:200]
+rl_pool = golden[200:]
+
+with open('data/heldout.jsonl', 'w', encoding='utf-8') as f:
+    for item in heldout: f.write(json.dumps(item, ensure_ascii=False) + '\n')
+
+with open('data/rl_pool.jsonl', 'w', encoding='utf-8') as f:
+    for item in rl_pool: f.write(json.dumps(item, ensure_ascii=False) + '\n')
+
+with open('data/step4_rejects.jsonl', 'w', encoding='utf-8') as f:
+    for item in (easy + hard): f.write(json.dumps(item, ensure_ascii=False) + '\n')
+
+print(f'🎉 结算完成！heldout: {len(heldout)} 条 | rl_pool: {len(rl_pool)} 条 | rejects: {len(easy+hard)} 条')
+"
+
+# 3. 将【筛选前】与【筛选后】全套数据集打包为单个压缩包（方便下载与消融对照）
+tar -czvf rlvr_datasets.tar.gz \
+    data/step3_verified_pool.jsonl \
+    data/rl_pool.jsonl \
+    data/heldout.jsonl \
+    data/step4_rejects.jsonl
+```
+
 产出文件：
-- `data/rl_pool.jsonl`：黄金难度强化学习训练池（2,000 ~ 4,000 条，通过率 10%~90%）；
-- `data/heldout.jsonl`：严格隔离的独立评测集（200 条，绝不进入训练池）。
+- `data/rl_pool.jsonl`：黄金难度强化学习训练池（**实测产出 2,470 条**，通过率 10%~90%，完美匹配 PPO 7B 训练规模）；
+- `data/heldout.jsonl`：严格隔离的独立评测集（**恰好 200 条**，绝不进入训练池）；
+- `data/step4_rejects.jsonl`：淘汰集（**3,330 条**，含极难 3,196 条、极易 134 条）；
+- `rlvr_datasets.tar.gz`：全套数据集压缩包（在网页 VSCode 或 SCOW 文件管理中直接下载到本地）。
 
 ---
 

@@ -244,10 +244,57 @@ print(f'已处理: {tot} 题 | 极易(>0.9): {easy} | 极难(<0.1): {hard} | �
   * 因此单批次（50题/卡 × 8卡 = 400题）总耗时约 7~8 分钟。
 * **数据筛选 vs 强化学习训练的算力使用区别**：
   * **D2 数据筛选阶段**：由于需要对数万次采样结果逐个跑单测，CPU 在执行 pytest 时成为主要耗时瓶颈，NPU 大部分时间处于等待沙箱返回状态；
-  * **D3/D4 PPO 强化学习训练阶段**：Actor 策略采样、Reference 模型评测、Critic 价值网络前向/反向传播以及 PPO 梯度更新，**全部 100% 由 8 张昇腾 910B 硬件加速**，CPU 仅负责快速奖励评分，届时将完全释放 NPU 的强大算力！
-* **实测筛选成果（验证黄金池设计）**：
-  * 推进至 2,800 题时统计：极易题（通过率>0.9）仅 65 题 (2.3%)，极难题（通过率<0.1）占 1,509 题 (53.9%)，**黄金难度题（0.1~0.9）达 1,226 题 (43.8%)**；
-  * 全量 10,434 题跑完后预计产出 **4,000+ 条高质量黄金题目**，完全满足强化学习对于“有探索空间且能获得奖励信号”的高阶训练要求，同时隔离出 200 条作为无污染的 `heldout.jsonl` 评测集。
+* **实测筛选成果与提前收割（Final Dataset Settled）**：
+  * **处理至 6,000 题时实测统计**：极易题（>0.9）134 题，极难题（<0.1）3,196 题，**🌟 黄金难度题（0.1~0.9）累计达 2,670 条（占比 44.5%）**！
+  * **提前收割最佳实践**：因 2,670 条已完美契合 2k~4k 的 PPO 训练池区间，为避免容器作业到期被掐断，直接在终端执行以下自包含命令一键结算并打包：
+    ```bash
+    cd /data/home/<你的学号>/project
+
+    # 1. 停掉后台筛选进程
+    pkill -9 -f f4_sample_filter
+
+    # 2. 一键切分并导出终版数据集
+    python3 -c "
+    import glob, json, os, random
+    random.seed(42)
+    files = sorted(glob.glob('data/_tmp_f4_worker_*.jsonl'))
+    all_data = [json.loads(l) for f in files for l in open(f, encoding='utf-8') if l.strip()]
+
+    golden, easy, hard = [], [], []
+    for item in all_data:
+        pr = item.get('sample_pass_rate', 0.0)
+        if pr > 0.9: easy.append(item)
+        elif pr < 0.1: hard.append(item)
+        else: golden.append(item)
+
+    random.shuffle(golden)
+    heldout = golden[:200]
+    rl_pool = golden[200:]
+
+    with open('data/heldout.jsonl', 'w', encoding='utf-8') as f:
+        for item in heldout: f.write(json.dumps(item, ensure_ascii=False) + '\n')
+
+    with open('data/rl_pool.jsonl', 'w', encoding='utf-8') as f:
+        for item in rl_pool: f.write(json.dumps(item, ensure_ascii=False) + '\n')
+
+    with open('data/step4_rejects.jsonl', 'w', encoding='utf-8') as f:
+        for item in (easy + hard): f.write(json.dumps(item, ensure_ascii=False) + '\n')
+
+    print(f'🎉 结算完成！heldout: {len(heldout)} 条 | rl_pool: {len(rl_pool)} 条 | rejects: {len(easy+hard)} 条')
+    "
+
+    # 3. 将【筛选前】与【筛选后】全套数据集打包为单个压缩包（供本地下载或消融对比）
+    tar -czvf rlvr_datasets.tar.gz \
+        data/step3_verified_pool.jsonl \
+        data/rl_pool.jsonl \
+        data/heldout.jsonl \
+        data/step4_rejects.jsonl
+    ```
+  * **最终产出清单**：
+    * `data/heldout.jsonl`：**200 条** 严格隔离考试题（绝不进训练池）；
+    * `data/rl_pool.jsonl`：**2,470 条** 黄金难度 PPO 训练池（通过率 10%~90%，完美契合 8 卡 3~4 小时训练规模）；
+    * `data/step4_rejects.jsonl`：**3,330 条** 淘汰题目；
+    * `rlvr_datasets.tar.gz`：全套数据集压缩包（在网页 VSCode 或 SCOW 文件管理中直接下载到本地电脑）。
 
 ---
 
