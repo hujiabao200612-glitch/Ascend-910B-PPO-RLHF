@@ -164,8 +164,32 @@ def run_filter4_parallel(
         records = records[:max_problems]
         print(f"[f4_sample_filter] 开启 --max_problems 截断，本次采样前 {len(records)} 道题目")
 
+    # ⚡ 自动扫描已有产出，实现断点增量续跑（跳过已处理题目，避免重复计算）
+    already_done_ids = set()
+    for existing_file in [rl_pool_path, heldout_path, rejects_path]:
+        if os.path.exists(existing_file):
+            with open(existing_file, "r", encoding="utf-8") as fe:
+                for line in fe:
+                    line = line.strip()
+                    if line:
+                        try:
+                            qid = json.loads(line).get("question_id")
+                            if qid:
+                                already_done_ids.add(qid)
+                        except Exception:
+                            pass
+
+    if already_done_ids:
+        orig_count = len(records)
+        records = [r for r in records if r.get("question_id") not in already_done_ids]
+        print(f"[f4_sample_filter] ⚡ 发现已完成题目 {len(already_done_ids)} 道！自动开启增量续跑模式，剩余待处理题目: {len(records)}/{orig_count} 道。")
+
+    if not records:
+        print("[f4_sample_filter] 🎉 所有题目已全部完成，无需重跑！")
+        return
+
     total_records = len(records)
-    print(f"[f4_sample_filter] 共载入 {total_records} 道题目，分配至 {gpus} 张显卡并行处理...")
+    print(f"[f4_sample_filter] 本次待处理 {total_records} 道题目，分配至 {gpus} 张显卡并行处理...")
 
     # 拆分成 chunks
     chunks = [records[i::gpus] for i in range(gpus)]
@@ -213,7 +237,7 @@ def run_filter4_parallel(
             except OSError:
                 pass
 
-    print(f"[f4_sample_filter] 全量 {len(all_results)} 道题目采样与判分已完成，正在分流过滤...")
+    print(f"[f4_sample_filter] 本次新增 {len(all_results)} 道题目采样与判分已完成，正在分流过滤...")
 
     kept_candidates = []
     too_easy_count = 0
@@ -223,7 +247,8 @@ def run_filter4_parallel(
     os.makedirs(os.path.dirname(os.path.abspath(heldout_path)), exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(rejects_path)), exist_ok=True)
 
-    with open(rejects_path, "w", encoding="utf-8") as frej:
+    # 追加写入淘汰集
+    with open(rejects_path, "a", encoding="utf-8") as frej:
         for item in all_results:
             pr = item.get("sample_pass_rate", 0.0)
             if pr > pass_rate_max:
@@ -237,30 +262,39 @@ def run_filter4_parallel(
             else:
                 kept_candidates.append(item)
 
-    print(f"[f4_sample_filter] 难度分级结果: 黄金难度保留 {len(kept_candidates)} | 极易淘汰 {too_easy_count} | 极难淘汰 {too_hard_count}")
+    print(f"[f4_sample_filter] 本轮分级: 新增黄金难度 {len(kept_candidates)} | 极易淘汰 {too_easy_count} | 极难淘汰 {too_hard_count}")
 
-    # 随机抽选 heldout
+    # 检查 heldout 是否已满
+    current_heldout_count = 0
+    if os.path.exists(heldout_path):
+        with open(heldout_path, "r", encoding="utf-8") as fh:
+            current_heldout_count = sum(1 for line in fh if line.strip())
+
+    needed_heldout = max(0, n_heldout - current_heldout_count)
     random.shuffle(kept_candidates)
-    actual_heldout_count = min(n_heldout, len(kept_candidates))
-    heldout_items = kept_candidates[:actual_heldout_count]
-    rl_pool_items = kept_candidates[actual_heldout_count:]
+    heldout_items = kept_candidates[:needed_heldout]
+    rl_pool_items = kept_candidates[needed_heldout:]
 
-    with open(heldout_path, "w", encoding="utf-8") as fheld:
-        for item in heldout_items:
-            fheld.write(json.dumps(item, ensure_ascii=False) + "\n")
+    if heldout_items:
+        with open(heldout_path, "a", encoding="utf-8") as fheld:
+            for item in heldout_items:
+                fheld.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-    with open(rl_pool_path, "w", encoding="utf-8") as frl:
-        for item in rl_pool_items:
-            frl.write(json.dumps(item, ensure_ascii=False) + "\n")
+    if rl_pool_items:
+        with open(rl_pool_path, "a", encoding="utf-8") as frl:
+            for item in rl_pool_items:
+                frl.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-    print(f"\n==================== [筛 4 最终成果清单] ====================")
-    print(f"输入题目总数: {total_records}")
-    print(f"太简单淘汰 (pass_rate > {pass_rate_max}): {too_easy_count}")
-    print(f"太难淘汰 (pass_rate < {pass_rate_min}): {too_hard_count}")
-    print(f"黄金难度入围: {len(kept_candidates)}")
-    print(f"  -> 留出独立评测集 (heldout.jsonl): {len(heldout_items)} 道")
-    print(f"  -> 最终强化学习训练池 (rl_pool.jsonl): {len(rl_pool_items)} 道")
-    print(f"产出已保存至: {rl_pool_path} 与 {heldout_path}")
+    final_rl_count = sum(1 for _ in open(rl_pool_path, encoding="utf-8")) if os.path.exists(rl_pool_path) else 0
+    final_held_count = sum(1 for _ in open(heldout_path, encoding="utf-8")) if os.path.exists(heldout_path) else 0
+    final_rej_count = sum(1 for _ in open(rejects_path, encoding="utf-8")) if os.path.exists(rejects_path) else 0
+
+    print(f"\n==================== [筛 4 累计成果清单] ====================")
+    print(f"本次新处理题数: {len(all_results)}")
+    print(f"当前累计强化学习训练池 (rl_pool.jsonl): {final_rl_count} 道")
+    print(f"当前累计独立评测集 (heldout.jsonl):     {final_held_count} 道")
+    print(f"当前累计淘汰集 (step4_rejects.jsonl):   {final_rej_count} 道")
+    print(f"总计已处理: {final_rl_count + final_held_count + final_rej_count} 道题目")
     print(f"===========================================================\n")
 
 
