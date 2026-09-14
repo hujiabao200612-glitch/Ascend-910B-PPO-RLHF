@@ -1,0 +1,38 @@
+# 模型权重与大二进制文件（GitHub 单文件限制 100MB，禁止上传模型）
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# 原始数据集与大型压缩包
+data_set/
+*.parquet
+*.tar
+*.tar.gz
+*.zip
+*.7z
+
+# Python 虚拟环境与字节码缓存
+envs/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# 训练日志与检查点
+*.log
+logs/
+checkpoints/
+output/
+runs/
+wandb/
+
+# IDE 与操作系统缓存
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
