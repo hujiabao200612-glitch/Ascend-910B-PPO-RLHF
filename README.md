@@ -84,6 +84,8 @@ Ascend-910B-PPO-RLHF/
 ├── D1_开工清单.md                  # 环境选型摸底与实测基线
 ├── D2_代码任务书_给AI生成.md       # 数据清洗与沙箱判分器需求规格
 ├── D2_数据准备清单.md              # 训练池准备与流水线规划
+├── D3_PPO调通与闭环验证清单.md      # PPO 20-step 冒烟验证与闭环设计
+├── D4_主训练与消融评测清单.md      # 全量主训练、消融矩阵与评测交付
 ├── 北理工智算集群用户指南.docx       # 智算平台使用说明手册
 └── project/                       # 核心执行脚本与代码
     ├── patch_vllm_ascend.py       # vllm-ascend 0.9.1rc1 多卡通信组修复补丁
@@ -104,6 +106,7 @@ Ascend-910B-PPO-RLHF/
         ├── f1_template.py         # 筛 1：套用统一 Prompt 模板
         ├── f2_verify.py           # 筛 2：标准答案过沙箱自洽性校验
         ├── f3_dedup.py            # 筛 3：去重 + 截长 + 评测防泄漏过滤
+        ├── f4_sample_filter.py    # 筛 4：7B 8 卡并行采样与 0.1~0.9 黄金难度池筛选
         └── tests/                 # 115 项自动化验收测试（100% 通过）
             ├── test_extract.py        # 15 条提取模块单元测试
             └── test_boundary_100.py   # 100 条全边界极限沙箱测试
@@ -199,7 +202,7 @@ python pipeline/f4_sample_filter.py \
     --gpus 8 \
     --max_problems 16
 
-# ② 正式全量 8 卡并行后台运行（10,434 题，8 卡总吞吐 ~1800 tok/s，约 40~60 分钟）：
+# ② 正式全量 8 卡并行后台运行（10,434 题，8 卡总吞吐 ~1800 tok/s）：
 nohup python pipeline/f4_sample_filter.py \
     --input data/step3_verified_pool.jsonl \
     --rl_pool data/rl_pool.jsonl \
@@ -209,7 +212,42 @@ nohup python pipeline/f4_sample_filter.py \
     --gpus 8 \
     --batch_size 50 \
     --gpu_memory_utilization 0.6 > f4_filter.log 2>&1 &
+
+# ③ 实时监控运行状态与筛选进展命令（常用操作）：
+# a. 查看实时日志滚动流
+tail -n 25 f4_filter.log
+
+# b. 查看各卡 GPU Worker 独立处理进度（行数累计）：
+wc -l data/_tmp_f4_worker_*.jsonl
+
+# c. 一键统计当前已处理题数及【极易 / 极难 / 🌟黄金难度池】分布：
+python3 -c "
+import json, glob
+easy, hard, golden = 0, 0, 0
+for f in glob.glob('data/_tmp_f4_worker_*.jsonl'):
+    for line in open(f, encoding='utf-8'):
+        d = json.loads(line)
+        pr = d.get('sample_pass_rate', 0.0)
+        if pr > 0.9: easy += 1
+        elif pr < 0.1: hard += 1
+        else: golden += 1
+tot = easy + hard + golden
+print(f'已处理: {tot} 题 | 极易(>0.9): {easy} | 极难(<0.1): {hard} | 🌟 黄金池(0.1~0.9): {golden} 条 ({golden/tot*100:.1f}%)')
+"
 ```
+
+### 💡 筛 4 耗时特征与算力归属分析（NPU vs CPU）
+
+* **为什么 8 卡并行筛选仍需约 1 ~ 1.5 小时？**
+  * **8 卡 NPU 生成极快**：8 张 910B 算力充沛，单卡吞吐达 `~1,800 tok/s`，每批 50 题（每题采样 8 次 = 400 个代码回复）的 NPU 生成仅需 **约 1 分 15 秒**；
+  * **耗时主要在 CPU 沙箱单测**：每个 Worker 需将这 400 个模型生成的完整 Python 脚本逐一拉起 `pytest` 沙箱进行动态断言测试，CPU 单进程串行跑完 400 题单测需 **约 6 分钟**；
+  * 因此单批次（50题/卡 × 8卡 = 400题）总耗时约 7~8 分钟。
+* **数据筛选 vs 强化学习训练的算力使用区别**：
+  * **D2 数据筛选阶段**：由于需要对数万次采样结果逐个跑单测，CPU 在执行 pytest 时成为主要耗时瓶颈，NPU 大部分时间处于等待沙箱返回状态；
+  * **D3/D4 PPO 强化学习训练阶段**：Actor 策略采样、Reference 模型评测、Critic 价值网络前向/反向传播以及 PPO 梯度更新，**全部 100% 由 8 张昇腾 910B 硬件加速**，CPU 仅负责快速奖励评分，届时将完全释放 NPU 的强大算力！
+* **实测筛选成果（验证黄金池设计）**：
+  * 推进至 2,800 题时统计：极易题（通过率>0.9）仅 65 题 (2.3%)，极难题（通过率<0.1）占 1,509 题 (53.9%)，**黄金难度题（0.1~0.9）达 1,226 题 (43.8%)**；
+  * 全量 10,434 题跑完后预计产出 **4,000+ 条高质量黄金题目**，完全满足强化学习对于“有探索空间且能获得奖励信号”的高阶训练要求，同时隔离出 200 条作为无污染的 `heldout.jsonl` 评测集。
 
 ---
 
@@ -236,6 +274,31 @@ bash smoke_ppo_7b.sh trainer.n_gpus_per_node=8 2>&1 | tee smoke_8c_7b.log
 
 ---
 
+## 🎯 后续阶段规划与任务指引（D3 & D4）
+
+项目全周期包含严密的阶段演进，D2 数据闭环完成后，后续工作被严格拆分为两份独立实施清单：
+
+### 1. [D3 阶段：PPO 调通与 20-Step 闭环验证清单](./D3_PPO调通与闭环验证清单.md)
+* **核心哲学**：**绝不上来就跑全量过夜长训！** 必须先在 8 卡 910B 上跑通 20 步的最小全链路闭环，确认显存不会打爆、奖励函数正常判分、梯度能回传。
+* **四大关键任务**：
+  1. **数据打包与格式转换（`pipeline/pack_to_parquet.py`）**：将 `rl_pool.jsonl` 转换为 verl 标准 Parquet 格式，拆分为 `train_smoke.parquet` (128题)、`train_full.parquet` 与 `test.parquet` (200题)；
+  2. **正式代码 RLVR 奖励驱动（`rewards/code_rlvr.py`）**：挂载正式代码沙箱，支持格式分（0.1）+ 测试用例通过率连续分（0.0~0.9）；
+  3. **7B × 8 卡 PPO 20-step 闭环验证**：执行 `smoke_ppo_7b_rlvr.sh`，核验单卡显存（<45GB）、单步吞吐（2~4分钟）、Reward 稳定上行、KL 散度受控（0.001~0.05）与 Checkpoint 成功保存；
+  4. **KL 惩罚系数 $\beta$ 短跑摸底**：对比 $\beta=0.001$ 与 $\beta=0.0005$ 的探索自由度与策略熵，定稿 D4 超参。
+
+### 2. [D4 阶段：全量主训练、消融矩阵与评测交付清单](./D4_主训练与消融评测清单.md)
+* **核心哲学**：**主训练出顶梁柱模型，消融实验出科研与答辩深度！** 证明模型不是死记硬背，而是真正掌握了通用代码推理能力。
+* **四大核心任务**：
+  1. **全量 7B × 8 卡正式主训练（过夜长训）**：全量 2,000 ~ 4,000 条黄金题目，跑 1 ~ 2 Epoch（约 40 ~ 80 steps，3 ~ 4 小时），使用 `start_train.sh` 后台无人值守运行，每 10 步自动存权重；
+  2. **三大核心消融实验（论文灵魂）**：
+     - **消融 1（奖励机制）**：纯 0/1 稀疏奖励 vs 平滑连续部分分（主线方案）；
+     - **消融 2（算法架构）**：PPO（带 Critic） vs GRPO（无 Critic 群组优势采样）；
+     - **消融 3（数据纯度）**：未经筛选的原题池 vs D2 筛4黄金难度池，量化“四道大筛”对 RL 收敛的决定性贡献；
+  3. **客观独立评测与基准对比**：在从未见过的 **Held-out 200 题** 与 **公共基准 MBPP** 上评测 Pass@1 / Pass@8，形成最终的模型能力跃升大对照表；
+  4. **训练动力学与安全审计（防 Reward Hacking）**：导出 TensorBoard 论文级曲线；人工抽检 50 条高分代码，编写《防 Hacking 审计报告》，确认无作弊行为。
+
+---
+
 ## ⚠️ 常见避坑指南（踩坑总结）
 
 | # | 踩坑现象 | 根本原因 | 正确应对 |
@@ -249,10 +312,11 @@ bash smoke_ppo_7b.sh trainer.n_gpus_per_node=8 2>&1 | tee smoke_8c_7b.log
 | 7 | vLLM 实例加载报错 `unexpected keyword argument 'tensor_model_parallel_size'` | 混淆了 verl 配置键名与 vLLM 原生 Python API 参数名 | 原生 vLLM 构造函数形参为 `tensor_parallel_size=1`（单卡亦可直接缺省） |
 | 8 | 多卡采样时主进程永久卡死在 Queue 获取 | `multiprocessing.Queue` 跨进程传输上万条大字典填满系统 buffer | 采用 Worker 独立分块直写文件 `_tmp_f4_worker_{gpu_id}.jsonl`，主进程安全合并 |
 | 9 | 昇腾 910B 推理报 HBM 碎片或 OOM 告警 | `gpu_memory_utilization` 设过高 (0.85+) 导致挤占算子及驱动显存 | 设为 `0.6` 即可（14.25GB 权重 + 24GB KV Cache，单卡 64GB 非常宽裕） |
-
+| 10 | 筛 4 多卡采样耗时约 1 小时，怀疑卡死或 GPU 未加速 | 8 卡 NPU 生成极快（~1800 tok/s，每批只需 1 分钟），耗时瓶颈在 CPU 逐题串行跑 pytest 沙箱单测（~6 分钟） | 属正常现象，通过 `tail -n 25 f4_filter.log` 观察 Worker 推进；后续 D3/D4 强化学习训练完全由 8 卡 NPU 全速运算 |
 
 ---
 
 ## 👥 协作与使用说明
 * 欢迎协作团队与班级同学基于此模板克隆并配置自己的训练任务；
 * 运行前将 `<你的学号>` 替换为各自平台的主目录路径即可无缝复用。
+
