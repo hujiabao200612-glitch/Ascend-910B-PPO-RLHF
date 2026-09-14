@@ -200,9 +200,9 @@ tar -czvf rlvr_datasets.tar.gz \
 ```
 
 产出文件：
-- `data/rl_pool.jsonl`：黄金难度强化学习训练池（**实测产出 2,470 条**，通过率 10%~90%，完美匹配 PPO 7B 训练规模）；
+- `data/rl_pool.jsonl`：黄金难度强化学习训练池（**实测产出 2,938 条**，通过率 10%~90%，完美匹配 PPO 7B 训练规模）；
 - `data/heldout.jsonl`：严格隔离的独立评测集（**恰好 200 条**，绝不进入训练池）；
-- `data/step4_rejects.jsonl`：淘汰集（**3,330 条**，含极难 3,196 条、极易 134 条）；
+- `data/step4_rejects.jsonl`：淘汰集（**3,862 条**，两极淘汰题目）；
 - `rlvr_datasets.tar.gz`：全套数据集压缩包（在网页 VSCode 或 SCOW 文件管理中直接下载到本地）。
 
 ---
@@ -299,3 +299,49 @@ bash smoke_ppo_7b.sh trainer.n_gpus_per_node=8 2>&1 | tee smoke_8c_7b.log
 | 14 | vLLM 实例加载报 unexpected keyword argument | 误把 verl 的 `tensor_model_parallel_size` 当做 vLLM 的初始化形参 | 原生 vLLM 参数名为 `tensor_parallel_size=1`（单卡亦可直接缺省） |
 | 15 | 8 卡并行采样多进程 Queue 管道卡死 | `multiprocessing.Queue` 跨进程传输大对象填满 OS 管道 buffer | 每个 Worker 独立直写临时文件 `_tmp_f4_worker_{gpu_id}.jsonl`，主进程安全汇总 |
 | 16 | 昇腾 910B 推理时 HBM 碎片 / OOM 告警 | `gpu_memory_utilization` 设为 0.85+ 挤占算子与系统保留内存 | 设为 `0.6` 即可（14.25GB 权重 + 24GB KV Cache，单卡 64GB 非常宽裕） |
+| 17 | pkill 未能彻底杀死多进程 Worker 导致新任务 OOM | pkill 仅杀死 Python 父进程，残留的 `multiprocessing.spawn` 子进程继续霸占 8 张 NPU 显存（56GB/卡） | 启动新任务前务必运行 `npu-smi info`；若有残留显存，用 `kill -9 <PIDs>` 或 `pkill -9 -f spawn_main` 彻底清空 |
+
+---
+
+## 8. D3 阶段：7B × 8 卡 PPO 20-step 闭环实战操作
+
+在 D2 产出 `data/rl_pool.jsonl`（2,938 题）与 `data/heldout.jsonl`（200 题）后，D3 阶段目标是在 8 卡 910B 上完成“数据加载 -> 8卡 Rollout -> 沙箱打分 -> Critic GAE -> 梯度更新 -> Checkpoint 导出”的 **20 步完整极速闭环验证**。
+
+### 第 1 步：将 JSONL 打包为 verl 标准 Parquet 格式
+
+在持久虚拟环境中执行格式转换：
+```bash
+cd /data/home/<你的学号>/project
+source envs/verl_env/bin/activate
+
+# 一键转换：产出 train_full.parquet (2938条)、train_smoke.parquet (128条)、test.parquet (200条)
+python3 pipeline/pack_to_parquet.py
+```
+> 输出确认：检查 `data/rlvr/` 下是否生成 3 个 Parquet 文件，列名是否包含 `['data_source', 'ability', 'prompt', 'reward_model', 'extra_info']`。
+
+### 第 2 步：核验正式代码 RLVR 奖励函数
+
+```bash
+# 运行 rewards/code_rlvr.py 内置自检
+python3 rewards/code_rlvr.py
+```
+> 验证通过标志：控制台输出 4 项测试全部 `[PASS]`（完美解答得 1.0、逻辑错得部分分、无代码块得 0.0、verl 字典传参兼容）。
+
+### 第 3 步：启动 7B × 8 卡 PPO 20-step 极速验证训练
+
+```bash
+# 启动前确认 8 张卡显存为空（0 MB）
+npu-smi info
+
+# 启动 20 步闭环训练（可直接前台观察或后台 nohup）
+bash smoke_ppo_7b_rlvr.sh 2>&1 | tee d3_smoke_7b.log
+```
+
+### 第 4 步：关键指标健康检查与验收（5 大验收门槛）
+
+1. **显存稳定**：单卡占用稳定在 35GB ~ 45GB 之间（64GB 留有 >18GB 安全余量，无 OOM）；
+2. **迭代耗时**：单步迭代耗时在 2 ~ 3 分钟以内，20 步总耗时约 40 ~ 50 分钟；
+3. **Reward 上行**：观察日志输出，`rewards/mean` 从初始的 ~0.3 上升至 0.6+；
+4. **KL 散度受控**：`kl_divergence` 稳定在 0.001 ~ 0.05 之间，未发散；
+5. **Checkpoint 导出**：训练顺利跑到 `step:20`，检查 `project/checkpoints/d3_smoke_7b_rlvr/` 成功保存模型权重文件。
+

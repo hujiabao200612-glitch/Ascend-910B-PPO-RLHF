@@ -360,6 +360,8 @@ bash smoke_ppo_7b.sh trainer.n_gpus_per_node=8 2>&1 | tee smoke_8c_7b.log
 | 8 | 多卡采样时主进程永久卡死在 Queue 获取 | `multiprocessing.Queue` 跨进程传输上万条大字典填满系统 buffer | 采用 Worker 独立分块直写文件 `_tmp_f4_worker_{gpu_id}.jsonl`，主进程安全合并 |
 | 9 | 昇腾 910B 推理报 HBM 碎片或 OOM 告警 | `gpu_memory_utilization` 设过高 (0.85+) 导致挤占算子及驱动显存 | 设为 `0.6` 即可（14.25GB 权重 + 24GB KV Cache，单卡 64GB 非常宽裕） |
 | 10 | 筛 4 多卡采样耗时约 1 小时，怀疑卡死或 GPU 未加速 | 8 卡 NPU 生成极快（~1800 tok/s，每批只需 1 分钟），耗时瓶颈在 CPU 逐题串行跑 pytest 沙箱单测（~6 分钟） | 属正常现象，通过 `tail -n 25 f4_filter.log` 观察 Worker 推进；后续 D3/D4 强化学习训练完全由 8 卡 NPU 全速运算 |
+| 11 | pkill 杀死多进程脚本后二次启动报 OOM | pkill 仅杀死 Python 父进程，残留的 `multiprocessing.spawn` 子进程仍霸占 8 张 NPU 显存（56GB/卡） | 运行 `npu-smi info` 核对；如有残留显存占用，用 `kill -9 <PIDs>` 或 `pkill -9 -f spawn_main` 彻底清空显存 |
+
 
 ---
 
