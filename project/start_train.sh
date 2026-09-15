@@ -32,7 +32,7 @@ if [ -f "$HOME_DIR/project/envs/verl_env/bin/activate" ]; then
 fi
 
 cd "$HOME_DIR/project"
-TRAIN_CMD="bash smoke_ppo_7b.sh trainer.n_gpus_per_node=8"    # ← 正式训练时换成正式脚本
+TRAIN_CMD="bash run_ppo_7b_full.sh trainer.n_gpus_per_node=8"
 LOG=train_$(date +%m%d_%H%M).log
 echo "[start_train] 开始: $TRAIN_CMD （日志: $LOG）"
 $TRAIN_CMD > "$LOG" 2>&1
