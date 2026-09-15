@@ -1,4 +1,4 @@
-# 模型权重与大二进制文件（GitHub 单文件限制 100MB，禁止上传模型）
+﻿# 模型权重与大二进制文件（GitHub 单文件限制 100MB，禁止上传模型）
 models/
 *.safetensors
 *.bin
@@ -9,6 +9,7 @@ models/
 # 原始数据集与大型压缩包
 data_set/
 *.parquet
+!project/data/rlvr/*.parquet
 *.tar
 *.tar.gz
 *.zip
