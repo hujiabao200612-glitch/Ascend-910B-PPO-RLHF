@@ -1,8 +1,8 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """eval_test_set.py — 独立评测集 (test.parquet, 200题) 全自动 Pass@1 评测脚本
 
 特性：
-1. 采用 vLLM 高性能离线推理，200 道题在昇腾 910B 上约 15~20 秒完成生成。
+1. 优先采用 vLLM 高性能离线推理（在昇腾 910B 上约 15~20 秒），带 Transformers 自动回退保护。
 2. 自动注入 Qwen 对话模板 (<|im_start|>user...)，与 PPO 训练期分布严格对齐。
 3. 挂载 64 线程 CPU 沙箱并发评测，5 秒内完成全部 200 题 pytest 真实打分。
 4. 输出清晰的 Pass@1 满分率、平均分与详细报告 JSON。
@@ -16,7 +16,11 @@ import argparse
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from transformers import AutoTokenizer
-from vllm import LLM, SamplingParams
+
+# 昇腾环境变量保护
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+os.environ.setdefault("VLLM_ASCEND_ENABLE_NZ", "0")
+os.environ.setdefault("HCCL_OP_EXPANSION_MODE", "AIV")
 
 # 导入奖励沙箱判分内核
 CUR_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +40,7 @@ def parse_args():
     parser.add_argument("--output", type=str, default=None, help="详细结果 JSON 导出路径")
     parser.add_argument("--max-tokens", type=int, default=768, help="最大生成 Token 长度")
     parser.add_argument("--workers", type=int, default=64, help="沙箱并发线程数")
+    parser.add_argument("--force-hf", action="store_true", help="强制使用 HuggingFace 原生生成")
     return parser.parse_args()
 
 
@@ -65,8 +70,7 @@ def main():
     # 1. 加载测试集
     df = pd.read_parquet(data_file)
     n_samples = len(df)
-    print(f"
->>> [1/3] 成功加载测试集: {n_samples} 道代码题")
+    print(f"\n>>> [1/3] 成功加载测试集: {n_samples} 道代码题")
 
     # 2. 构造严格对齐的 Prompt
     tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
@@ -84,38 +88,69 @@ def main():
         formatted = tokenizer.apply_chat_template(dialog, tokenize=False, add_generation_prompt=True)
         raw_prompts.append(formatted)
 
-        # 提取测试代码
         rm = row["reward_model"]
         test_code = rm.get("ground_truth", "") if isinstance(rm, dict) else str(rm)
         tests.append(test_code)
         extra_infos.append(row.get("extra_info", {}))
 
-    # 3. vLLM 批量贪心推理 (Greedy Decoding for Pass@1)
-    print(f"
->>> [2/3] 启动 vLLM 批量推理生成 ({n_samples} 题) ...")
+    # 3. 批量生成 (优先 vLLM，支持回退)
+    print(f"\n>>> [2/3] 启动批量推理生成 ({n_samples} 题) ...")
     t0_gen = time.time()
+    generated_texts = []
 
-    sampling_params = SamplingParams(
-        temperature=0.0,
-        max_tokens=args.max_tokens,
-        top_p=1.0,
-    )
+    use_vllm = not args.force_hf
+    if use_vllm:
+        try:
+            from vllm import LLM, SamplingParams
+            print("    [引擎] 挂载 vLLM 高性能离线推理加速 ...")
+            sampling_params = SamplingParams(
+                temperature=0.0,
+                max_tokens=args.max_tokens,
+                top_p=1.0,
+            )
+            llm = LLM(
+                model=model_dir,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=0.5,
+                trust_remote_code=True,
+            )
+            outputs = llm.generate(raw_prompts, sampling_params)
+            generated_texts = [o.outputs[0].text for o in outputs]
+        except Exception as exc:
+            print(f"    [WARN] vLLM 推理遇到异常 ({exc})，平滑切换至 HuggingFace 原生引擎 ...")
+            use_vllm = False
 
-    llm = LLM(
-        model=model_dir,
-        tensor_parallel_size=1,
-        gpu_memory_utilization=0.6,
-        trust_remote_code=True,
-    )
+    if not use_vllm:
+        import torch
+        from transformers import AutoModelForCausalLM
+        print("    [引擎] 挂载 HuggingFace 原生推理引擎 ...")
+        device = "npu:0" if hasattr(torch, "npu") and torch.npu.is_available() else ("cuda:0" if torch.cuda.is_available() else "cpu")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_dir,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+        ).to(device).eval()
 
-    outputs = llm.generate(raw_prompts, sampling_params)
-    generated_texts = [o.outputs[0].text for o in outputs]
+        for i, prompt_text in enumerate(raw_prompts):
+            inputs = tokenizer(prompt_text, return_tensors="pt").to(device)
+            with torch.no_grad():
+                gen_ids = model.generate(
+                    **inputs,
+                    max_new_tokens=args.max_tokens,
+                    do_sample=False,
+                    pad_token_id=tokenizer.eos_token_id,
+                )
+            new_tokens = gen_ids[0][inputs["input_ids"].shape[1]:]
+            resp = tokenizer.decode(new_tokens, skip_special_tokens=True)
+            generated_texts.append(resp)
+            if (i + 1) % 20 == 0 or (i + 1) == n_samples:
+                print(f"    - 推理进度: [{i+1}/{n_samples}] 题已生成")
+
     gen_duration = time.time() - t0_gen
-    print(f"    vLLM 推理完成！总耗时: {gen_duration:.2f}s (平均 {gen_duration/n_samples*1000:.1f}ms/题)")
+    print(f"    批量生成完成！总耗时: {gen_duration:.2f}s (平均 {gen_duration/n_samples*1000:.1f}ms/题)")
 
     # 4. 多线程 CPU 沙箱并发跑 pytest
-    print(f"
->>> [3/3] 启动 {args.workers} 线程沙箱并发判分 ...")
+    print(f"\n>>> [3/3] 启动 {args.workers} 线程沙箱并发判分 ...")
     t0_eval = time.time()
 
     eval_items = []
@@ -155,8 +190,7 @@ def main():
     mean_reward = sum(scores) / n_samples
     avg_len = sum(len(tokenizer.encode(t)) for t in generated_texts) / n_samples
 
-    print("
-=================================================================")
+    print("\n=================================================================")
     print(f"                    评测成绩核算 (Pass@1 Report)                  ")
     print("=================================================================")
     print(f"  模型名称:               {model_name}")
@@ -195,9 +229,7 @@ def main():
     }
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
-    print(f"
-[OK] 完整评测明细报告已写入: {out_file}
-")
+    print(f"\n[OK] 完整评测明细报告已写入: {out_file}\n")
 
 
 if __name__ == "__main__":
