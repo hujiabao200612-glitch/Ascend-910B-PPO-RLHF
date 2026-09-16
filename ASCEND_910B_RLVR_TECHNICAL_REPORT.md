@@ -532,8 +532,11 @@ GRPO Step50: [===================== 79.47% ] (619 题通过, +24 题) ⚡ 算力
 
 结合顶刊前沿成果（CUDA 算子生成的 *Robust Reward Scheduling* 与阿里通义千问 Qwen 团队 2026 年关于代码奖励“没有银弹”的重磅论文 *The Verification Horizon: No Silver Bullet for Coding Agent Rewards*），我们在项目中设计了专门的**奖励函数四大消融实验组**（详见独立技术方案文档 [`REWARD_FUNCTION_ABLATION_PLAN.md`](file:///E:/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD%E9%A1%B9%E7%9B%AE/1_%E8%87%AA%E5%B7%B1%E7%9A%84%E9%A1%B9%E7%9B%AE/%E5%BC%BA%E5%8C%96%E5%AD%A6%E4%B9%A0%E4%B8%8E%E5%A4%A7%E6%A8%A1%E5%9E%8B/RLHF/Ascend-910B-PPO-RLHF/REWARD_FUNCTION_ABLATION_PLAN.md)）：
 
-1. **Exp 1: 失败强负惩罚消融 (Negative Penalty: $r \in \{-1.0, +1.0\}$)**
-   - 借鉴 CUDA 论文对校验失败处以 $-1.0$ 的硬红线设计。将通过与失败的 Advantage Gap 从 $1.0$ 扩大至 $2.0$，验证是否能进一步把致命运行时崩溃（Fatal Errors）从当前的 12 次大幅压降至个位数。
+1. **Exp 1: 失败强负惩罚消融 (Negative Penalty: $r \in \{-1.0, +1.0\}$) [实测已完成]**
+   - 借鉴 CUDA 论文对校验失败处以 $-1.0$ 的硬红线设计，50 步实测斩获重大发现：
+     - **致命运行时错误断崖暴跌 91.7%**：在 KodCode 独立验证集中，致命崩溃错误从基座的 24 次和主线的 12 次**骤降至仅 2 次**！
+     - **自适应根除代码冗长膨胀**：平均 Token 长度从主线 PPO 的 379.7 缩减至 **203.3**（下降 46.8%），大幅摆脱冗余废话；
+     - **跨基准测试**：KodCode 达到 77.50%（超基座 1.0%），HumanEval 78.66%，MBPP 73.30%，展现出高防御与精简特性。
 2. **Exp 2: 纯稀疏二进制奖励消融 (Sparse Binary RLVR: $r \in \{0.0, +1.0\}$)**
    - 检验 Qwen 团队提出的“过程分诱发 Proxy Hacking”假说。彻底剥离格式分（$0.1$）与语法执行分（$0.2$），全对才给分，验证策略模型是否能消除伪装样板代码。
 3. **Exp 3: 全离散阶梯分档消融 (Discrete Bins: $r \in \{-1.0, 0.0, +1.0\}$)**
@@ -555,6 +558,9 @@ GRPO Step50: [===================== 79.47% ] (619 题通过, +24 题) ⚡ 算力
 - **消融 GRPO 交付模型**：`checkpoints/d4_ablation_7b_grpo_hf/`  
   - 核心标识：Qwen2.5-7B-Instruct-GRPO-Step50
   - 适用场景：极速算法求解、短函数代码实现、推理开销敏感型业务
+- **消融强负惩罚交付模型**：`checkpoints/d4_ablation_7b_neg_penalty_hf/`  
+  - 核心标识：Qwen2.5-7B-Instruct-PPO-NegPenalty-Step50
+  - 适用场景：极致安全防御场景（致命崩溃率仅 1%）、极简无废话编码风格
 
 ---
 
