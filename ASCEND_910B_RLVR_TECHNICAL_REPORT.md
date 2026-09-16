@@ -526,6 +526,23 @@ GRPO Step50: [===================== 79.47% ] (619 题通过, +24 题) ⚡ 算力
 
 ---
 
+### 8.4 奖励函数形态学与下一步消融演进路线（Reward Landscape Ablation）
+
+在完成 PPO 与 GRPO 的算法架构消融后，后续研究的核心演进方向是**探究奖励函数几何形态（Reward Landscape）对模型策略行为的根本塑造作用**。
+
+结合顶刊前沿成果（CUDA 算子生成的 *Robust Reward Scheduling* 与阿里通义千问 Qwen 团队 2026 年关于代码奖励“没有银弹”的重磅论文 *The Verification Horizon: No Silver Bullet for Coding Agent Rewards*），我们在项目中设计了专门的**奖励函数四大消融实验组**（详见独立技术方案文档 [`REWARD_FUNCTION_ABLATION_PLAN.md`](file:///E:/%E4%BA%BA%E5%B7%A5%E6%99%BA%E8%83%BD%E9%A1%B9%E7%9B%AE/1_%E8%87%AA%E5%B7%B1%E7%9A%84%E9%A1%B9%E7%9B%AE/%E5%BC%BA%E5%8C%96%E5%AD%A6%E4%B9%A0%E4%B8%8E%E5%A4%A7%E6%A8%A1%E5%9E%8B/RLHF/Ascend-910B-PPO-RLHF/REWARD_FUNCTION_ABLATION_PLAN.md)）：
+
+1. **Exp 1: 失败强负惩罚消融 (Negative Penalty: $r \in \{-1.0, +1.0\}$)**
+   - 借鉴 CUDA 论文对校验失败处以 $-1.0$ 的硬红线设计。将通过与失败的 Advantage Gap 从 $1.0$ 扩大至 $2.0$，验证是否能进一步把致命运行时崩溃（Fatal Errors）从当前的 12 次大幅压降至个位数。
+2. **Exp 2: 纯稀疏二进制奖励消融 (Sparse Binary RLVR: $r \in \{0.0, +1.0\}$)**
+   - 检验 Qwen 团队提出的“过程分诱发 Proxy Hacking”假说。彻底剥离格式分（$0.1$）与语法执行分（$0.2$），全对才给分，验证策略模型是否能消除伪装样板代码。
+3. **Exp 3: 全离散阶梯分档消融 (Discrete Bins: $r \in \{-1.0, 0.0, +1.0\}$)**
+   - 消除连续用例比例浮点噪声，将 Critic 价值回归转化为低方差的有序阶梯拟合，抑制训练方差。
+4. **Exp 4: 正确性与代码精简度双目标消融 (Length/Efficiency-Aware: $r \in \{-1.0, +1.0, +1.5\}$)**
+   - 针对主训练中 PPO 代码体积膨胀至 379.7 tokens 的痛点，对全通且代码长度 $\le 250$ 的极简代码给予 $+0.5$ 额外加成，驱动 PPO 兼备高防御性与算法极简度，冲击 HumanEval 84%+。
+
+---
+
 ## 九、工程产出物交付与复现指南
 
 ### 9.1 模型资产交付
