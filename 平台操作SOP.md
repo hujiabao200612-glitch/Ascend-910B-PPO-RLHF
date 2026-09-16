@@ -354,3 +354,63 @@ bash smoke_ppo_7b_rlvr.sh 2>&1 | tee d3_smoke_7b.log
 4. **KL 散度受控**：`kl_divergence` 稳定在 0.001 ~ 0.05 之间，未发散；
 5. **Checkpoint 导出**：训练顺利跑到 `step:20`，检查 `project/checkpoints/d3_smoke_7b_rlvr/` 成功保存模型权重文件。
 
+---
+
+## 9. D4 阶段：7B 全量训练、消融与三重权威 Benchmark 评测实战（791 题全流程）
+
+在 D3 验证 8 卡闭环后，进入正式生产级全量强化学习训练与权威基准独立评测。
+
+### 第 1 步：启动 8 卡 PPO 71-step 主训练（1 个完整 Epoch）
+```bash
+cd /data/home/<你的学号>/project
+source envs/verl_env/bin/activate
+
+# 启动 8 卡正式训练（建议后台 nohup 运行）
+nohup bash run_ppo_7b_full.sh > train_ppo_$(date +%m%d_%H%M).log 2>&1 &
+# 实时跟踪训练日志
+tail -f train_ppo_*.log
+```
+> **耗时基准**：约 1 小时 04 分，71 步全通，产出权重保存在 `checkpoints/d4_full_7b_rlvr/global_step_71/`。
+
+### 第 2 步：启动 8 卡 GRPO 50-step 消融训练（DeepSeek-R1 范式）
+```bash
+# 启动 8 卡 GRPO 消融训练（完全关闭 Critic，群组采样 G=4）
+nohup bash run_grpo_7b_ablation.sh > train_grpo_$(date +%m%d_%H%M).log 2>&1 &
+tail -f train_grpo_*.log
+```
+> **耗时基准**：约 37 分 51 秒（提速 42%），产出权重保存在 `checkpoints/d4_ablation_7b_grpo/global_step_50/`。
+
+### 第 3 步：一键执行三重权威 Benchmark 评测流水线（共 791 题）
+
+在评测前，确保已转换为原生 HuggingFace 格式，评测环境使用 64 线程 CPU 原生安全沙箱（防止死锁）：
+
+#### ① KodCode Held-Out 独立验证集（200 题）
+```bash
+python3 eval_test_set.py \
+    --model checkpoints/d4_full_7b_rlvr_hf \
+    --output eval_results/eval_ppo_step71.json
+```
+
+#### ② OpenAI HumanEval 算法基准（164 题）
+```bash
+python3 eval_humaneval.py \
+    --model checkpoints/d4_full_7b_rlvr_hf \
+    --output eval_results/eval_humaneval_ppo.json
+```
+
+#### ③ Google MBPP Sanitized 函数基准（427 题）
+```bash
+python3 eval_mbpp.py \
+    --model checkpoints/d4_full_7b_rlvr_hf \
+    --output eval_results/eval_mbpp_ppo.json
+```
+
+### 第 4 步：全量 791 题实测验收基准表（供对照核验）
+
+| 模型版本 | KodCode (200 题) | HumanEval (164 题) | MBPP (427 题) | 791 题宏观平均通过率 | 致命错误数 |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Qwen2.5-7B-Instruct 基座** | 76.50% (153/200) | 78.66% (129/164) | 73.30% (313/427) | **76.15% (595/791)** | 24 次 |
+| **PPO Step 71 (主线最终版)** | **82.00% (164/200)** | 82.93% (136/164) | **75.88% (324/427)** | **80.27% (624/791)** 🏆 | **12 次 (-50%)** |
+| **GRPO Step 50 (消融最终版)** | 79.00% (158/200) | **83.54% (137/164)** ⚡ | **75.88% (324/427)** | **79.47% (619/791)** | 18 次 |
+
+
