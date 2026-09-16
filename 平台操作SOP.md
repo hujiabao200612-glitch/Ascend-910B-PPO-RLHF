@@ -220,10 +220,18 @@ tar -czvf rlvr_datasets.tar.gz \
 
 **start_train.sh 的四个动作**（文件已随 project 分发）：① 平台追加的 `--bind-addr` 原样转交 code-server，"连接"按钮照常可用；② 激活持久 venv；③ 后台跑 `TRAIN_CMD`（**换训练内容只改脚本里这一行**），日志落盘 `project/train_月日_时分.log`；④ 训练结束后 `tail` 保活容器，随时连进去收 checkpoint——**收完记得手动停掉作业**（保活会一直算机时）。checkpoint 目录记得在训练脚本里开 `trainer.save_freq>0`（写挂载目录）。
 
-**每个新作业 10 秒自检**（可选）：
+**每个新作业 10 秒自检**（开终端必跑三部曲）：
 
 ```bash
-python3 -c "import torch,torch_npu,vllm,verl;print('OK',torch.npu.is_available())"   # 输出 OK True 即环境完好
+# 1) 进入项目目录并激活持久虚拟环境（⚠️ 新终端默认处于容器全局环境，未装 verl，必须先激活！）
+cd /data/home/<你的学号>/project
+source envs/verl_env/bin/activate
+
+# 2) 检查四大件与 NPU 就绪状态（输出 OK True 即环境完好）
+python3 -c "import torch,torch_npu,vllm,verl;print('OK',torch.npu.is_available())"
+
+# 3) 新容器初次连入，顺手打一次多卡补丁（幂等防卡死）
+python3 patch_vllm_ascend.py
 ```
 
 **两条纪律**：① **别换镜像**——venv 绑定镜像里的 torch/CANN，换镜像版本 = 重做第 4 步（5 分钟）；② **挂载点一个不能少勾**（`project` + 两个模型文件夹），少勾哪个容器里就缺哪个。
@@ -300,6 +308,7 @@ bash smoke_ppo_7b.sh trainer.n_gpus_per_node=8 2>&1 | tee smoke_8c_7b.log
 | 15 | 8 卡并行采样多进程 Queue 管道卡死 | `multiprocessing.Queue` 跨进程传输大对象填满 OS 管道 buffer | 每个 Worker 独立直写临时文件 `_tmp_f4_worker_{gpu_id}.jsonl`，主进程安全汇总 |
 | 16 | 昇腾 910B 推理时 HBM 碎片 / OOM 告警 | `gpu_memory_utilization` 设为 0.85+ 挤占算子与系统保留内存 | 设为 `0.6` 即可（14.25GB 权重 + 24GB KV Cache，单卡 64GB 非常宽裕） |
 | 17 | pkill 未能彻底杀死多进程 Worker 导致新任务 OOM | pkill 仅杀死 Python 父进程，残留的 `multiprocessing.spawn` 子进程继续霸占 8 张 NPU 显存（56GB/卡） | 启动新任务前务必运行 `npu-smi info`；若有残留显存，用 `kill -9 <PIDs>` 或 `pkill -9 -f spawn_main` 彻底清空 |
+| 18 | 新终端自检报 `ModuleNotFoundError: No module named 'verl'` | 新开 VSCode 终端默认在宿主全局环境，未激活挂载盘持久环境 | 每次新开终端必须先 `cd /data/home/<你的学号>/project && source envs/verl_env/bin/activate`，提示符出现 `(verl_env)` 即恢复正常 |
 
 ---
 
