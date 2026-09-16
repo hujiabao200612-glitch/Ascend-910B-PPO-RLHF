@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """eval_mbpp.py — Google 官方 MBPP (427 题) 标准 Pass@1 评测器（严格遵循官方 Prompt 规范）"""
 import os, sys, json, time, argparse, re, subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -21,7 +21,19 @@ def main():
     model_dir = os.path.abspath(args.model)
     model_name = os.path.basename(os.path.normpath(model_dir))
     
-    with open(args.data, "r", encoding="utf-8") as f:
+    data_path = args.data
+    if not os.path.exists(data_path):
+        candidates = [
+            os.path.join(os.path.dirname(__file__), "mbpp_sanitized_official.json"),
+            os.path.join(os.path.dirname(__file__), "data", "mbpp_sanitized_official.json"),
+            os.path.join(os.path.dirname(__file__), "data", "benchmarks", "mbpp_sanitized_official.json"),
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                data_path = c
+                break
+
+    with open(data_path, "r", encoding="utf-8") as f:
         problems = json.load(f)
         
     print(f"\n=================================================================")

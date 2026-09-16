@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """eval_humaneval.py — HumanEval 自动解耦版（避免昇腾 NPU 与 os.fork 冲突）"""
 import os, sys, json, time, argparse, gzip, subprocess, re
 from transformers import AutoTokenizer
@@ -19,8 +19,20 @@ def main():
     model_dir = os.path.abspath(args.model)
     model_name = os.path.basename(os.path.normpath(model_dir))
     
+    data_path = args.data
+    if not os.path.exists(data_path):
+        candidates = [
+            os.path.join(os.path.dirname(__file__), "HumanEval.jsonl.gz"),
+            os.path.join(os.path.dirname(__file__), "data", "HumanEval.jsonl.gz"),
+            os.path.join(os.path.dirname(__file__), "data", "benchmarks", "HumanEval.jsonl.gz"),
+        ]
+        for c in candidates:
+            if os.path.exists(c):
+                data_path = c
+                break
+
     problems = {}
-    with gzip.open(args.data, "rt", encoding="utf-8") if args.data.endswith(".gz") else open(args.data, "r", encoding="utf-8") as f:
+    with gzip.open(data_path, "rt", encoding="utf-8") if data_path.endswith(".gz") else open(data_path, "r", encoding="utf-8") as f:
         for line in f:
             d = json.loads(line)
             problems[d["task_id"]] = d
