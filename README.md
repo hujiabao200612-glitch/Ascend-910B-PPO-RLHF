@@ -4,7 +4,9 @@
 > 
 > 本文档为**项目主控总纲**，集成了：**项目整体规划**、**D1 ~ D4 全周期各阶段实施任务指南**、**北理工智算平台（SCOW AI / K8s）全景操作 SOP** 以及 **实测避坑宝典**。
 > 
-> 📊 **全量实验结果、PPO/GRPO 架构消融、4 组奖励函数消融与深度机理分析**，请直接参阅：👉 [**`EXPERIMENT_RESULTS.md`（实验结果与科研分析总汇）**](./EXPERIMENT_RESULTS.md)。
+> 📊 **全量实验结果、PPO/GRPO 架构消融、5 组奖励函数消融与深度机理分析**，请直接参阅：👉 [**`EXPERIMENT_RESULTS.md`（实验结果与科研分析总汇）**](./EXPERIMENT_RESULTS.md)。
+> 
+> 💡 **下一代前沿奖励函数理论设计与工业落地指南**（融合 VeRPO 基数偏差校准、TIPS 连续势能塑形、DHRCL 三阶段课程退火与 MAPO 混合优势估计），请直接参阅：👉 [**`ADVANCED_REWARD_DESIGN.md`（前沿奖励设计与生产代码）**](./ADVANCED_REWARD_DESIGN.md)。
 
 ---
 
@@ -229,11 +231,12 @@ flowchart LR
   # 2. 启动 8 卡 GRPO 50-step 架构消融训练（无 Critic，耗时 37m 51s）
   nohup bash run_grpo_7b_ablation.sh > train_grpo.log 2>&1 &
 
-  # 3. 启动 4 组奖励函数消融训练（各 50 步）
-  nohup bash run_ppo_7b_ablation_neg_penalty.sh > train_neg.log 2>&1 &     # Exp 1: 强负惩罚
+  # 3. 启动 5 组奖励函数消融训练（各 50 步）
+  nohup bash run_ppo_7b_ablation_neg_penalty.sh > train_neg.log 2>&1 &       # Exp 1: 强负惩罚
   nohup bash run_ppo_7b_ablation_sparse.sh > train_sparse.log 2>&1 &         # Exp 2: 纯稀疏
   nohup bash run_ppo_7b_ablation_discrete_bins.sh > train_bins.log 2>&1 &   # Exp 3: 全离散阶梯
   nohup bash run_ppo_7b_ablation_len_efficiency.sh > train_len.log 2>&1 &   # Exp 4: 长度双目标
+  nohup bash run_ppo_7b_ablation_denser.sh > train_denser.log 2>&1 &         # Exp 5: DenseR 散度信用与独特性
 
   # 4. 三重基准一键评测（以主线 PPO 为例）
   python3 eval_test_set.py --model checkpoints/d4_full_7b_rlvr_hf --output eval_results/eval_ppo_step71.json

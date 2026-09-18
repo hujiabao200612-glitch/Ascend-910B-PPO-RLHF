@@ -131,3 +131,59 @@ try:
 except Exception as e:
     print(f"[patch_vllm_ascend] [3/3] WARN: failed to patch verl reward manager: {e}")
 
+# ----------------- 补丁 4: 修复 transformers 新版 PretrainedConfig 导入兼容 -----------------
+try:
+    import transformers
+    mod_utils_path = os.path.join(os.path.dirname(transformers.__file__), "modeling_utils.py")
+    if os.path.exists(mod_utils_path):
+        content = open(mod_utils_path, "r", encoding="utf-8").read()
+        if "from transformers.configuration_utils import PretrainedConfig" not in content and "from .configuration_utils import PretrainedConfig" not in content:
+            open(mod_utils_path, "w", encoding="utf-8").write("from transformers.configuration_utils import PretrainedConfig\n" + content)
+            print("[patch_vllm_ascend] [4/4] PATCHED OK: transformers.modeling_utils PretrainedConfig export restored")
+        else:
+            print("[patch_vllm_ascend] [4/4] transformers.modeling_utils already contains PretrainedConfig export, skip")
+    
+    # 同时修正 verl npu_patch.py 的导入源与 Qwen2_5_VLRMSNorm 属性
+    site_pkgs = os.path.dirname(os.path.dirname(transformers.__file__))
+    npu_patch_path = os.path.join(site_pkgs, "verl", "models", "transformers", "npu_patch.py")
+    if os.path.exists(npu_patch_path):
+        np_content = open(npu_patch_path, "r", encoding="utf-8").read()
+        target_import = "from transformers.modeling_utils import PretrainedConfig, PreTrainedModel"
+        fixed_import = "from transformers.configuration_utils import PretrainedConfig\nfrom transformers.modeling_utils import PreTrainedModel"
+        if target_import in np_content:
+            np_content = np_content.replace(target_import, fixed_import)
+            print("[patch_vllm_ascend] [4/5] PATCHED OK: verl npu_patch.py PretrainedConfig import fixed")
+        
+        target_norm = "modeling_qwen2_5_vl.Qwen2RMSNorm.forward = rms_norm_forward"
+        fixed_norm = "getattr(modeling_qwen2_5_vl, 'Qwen2_5_VLRMSNorm', getattr(modeling_qwen2_5_vl, 'Qwen2RMSNorm', None)).forward = rms_norm_forward"
+        if target_norm in np_content:
+            np_content = np_content.replace(target_norm, fixed_norm)
+            print("[patch_vllm_ascend] [5/5] PATCHED OK: verl npu_patch.py Qwen2_5_VLRMSNorm compatibility fixed")
+        
+        open(npu_patch_path, "w", encoding="utf-8").write(np_content)
+
+    # 在 transformers 自身 modeling_qwen2_5_vl 中添加 Qwen2RMSNorm 别名
+    qwen_vl_path = os.path.join(os.path.dirname(transformers.__file__), "models", "qwen2_5_vl", "modeling_qwen2_5_vl.py")
+    if os.path.exists(qwen_vl_path):
+        q_content = open(qwen_vl_path, "r", encoding="utf-8").read()
+        if "Qwen2_5_VLRMSNorm" in q_content and "Qwen2RMSNorm = Qwen2_5_VLRMSNorm" not in q_content:
+            open(qwen_vl_path, "a", encoding="utf-8").write("\n# verl compatibility alias\nif 'Qwen2_5_VLRMSNorm' in globals() and 'Qwen2RMSNorm' not in globals():\n    Qwen2RMSNorm = Qwen2_5_VLRMSNorm\n")
+            print("[patch_vllm_ascend] [5/5] PATCHED OK: transformers modeling_qwen2_5_vl Qwen2RMSNorm alias added")
+    # 补丁 6: 兼容 transformers 5.x 移除 all_special_tokens_extended 导致 vLLM 崩溃的问题
+    from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+    if not hasattr(PreTrainedTokenizerBase, "all_special_tokens_extended"):
+        PreTrainedTokenizerBase.all_special_tokens_extended = property(lambda self: self.all_special_tokens)
+        print("[patch_vllm_ascend] [6/6] PATCHED OK: PreTrainedTokenizerBase.all_special_tokens_extended property restored")
+
+    tok_base_path = os.path.join(os.path.dirname(transformers.__file__), "tokenization_utils_base.py")
+    if os.path.exists(tok_base_path):
+        tb_content = open(tok_base_path, "r", encoding="utf-8").read()
+        if "all_special_tokens_extended" not in tb_content:
+            open(tok_base_path, "a", encoding="utf-8").write("\n# vllm compatibility property\nif hasattr(PreTrainedTokenizerBase, 'all_special_tokens') and not hasattr(PreTrainedTokenizerBase, 'all_special_tokens_extended'):\n    PreTrainedTokenizerBase.all_special_tokens_extended = property(lambda self: self.all_special_tokens)\n")
+            print("[patch_vllm_ascend] [6/6] PATCHED OK: tokenization_utils_base.py persistent patch written")
+except Exception as e:
+    print(f"[patch_vllm_ascend] [WARN]: failed to patch transformers/verl: {e}")
+
+
+
+
