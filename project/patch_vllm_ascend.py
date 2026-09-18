@@ -181,6 +181,28 @@ try:
         if "all_special_tokens_extended" not in tb_content:
             open(tok_base_path, "a", encoding="utf-8").write("\n# vllm compatibility property\nif hasattr(PreTrainedTokenizerBase, 'all_special_tokens') and not hasattr(PreTrainedTokenizerBase, 'all_special_tokens_extended'):\n    PreTrainedTokenizerBase.all_special_tokens_extended = property(lambda self: self.all_special_tokens)\n")
             print("[patch_vllm_ascend] [6/6] PATCHED OK: tokenization_utils_base.py persistent patch written")
+
+    # ----------------- 补丁 7: 修复 vLLM ovis.py 与 transformers aimv2 重复注册冲突 -----------------
+    ovis_path = "/vllm-workspace/vllm/vllm/transformers_utils/configs/ovis.py"
+    if os.path.exists(ovis_path):
+        s_ovis = open(ovis_path, "r", encoding="utf-8").read()
+        target_reg = 'AutoConfig.register("aimv2", AIMv2Config)'
+        if target_reg in s_ovis:
+            repl_reg = 'try:\n    AutoConfig.register("aimv2", AIMv2Config, exist_ok=True)\nexcept Exception:\n    pass'
+            s_ovis = s_ovis.replace(target_reg, repl_reg)
+            open(ovis_path, "w", encoding="utf-8").write(s_ovis)
+            print("[patch_vllm_ascend] [7/7] PATCHED OK: ovis.py aimv2 registration conflict fixed")
+        else:
+            print("[patch_vllm_ascend] [7/7] ovis.py aimv2 patch already applied or pattern not found")
+
+    cfg_auto_path = os.path.join(os.path.dirname(transformers.__file__), "models", "auto", "configuration_auto.py")
+    if os.path.exists(cfg_auto_path):
+        c_auto = open(cfg_auto_path, "r", encoding="utf-8").read()
+        if "def register(model_type, config, exist_ok=False):" in c_auto:
+            c_auto = c_auto.replace("def register(model_type, config, exist_ok=False):", "def register(model_type, config, exist_ok=True):")
+            c_auto = c_auto.replace("def register(self, key, value, exist_ok=False):", "def register(self, key, value, exist_ok=True):")
+            open(cfg_auto_path, "w", encoding="utf-8").write(c_auto)
+            print("[patch_vllm_ascend] [7/7] PATCHED OK: configuration_auto.py exist_ok=True applied")
 except Exception as e:
     print(f"[patch_vllm_ascend] [WARN]: failed to patch transformers/verl: {e}")
 
