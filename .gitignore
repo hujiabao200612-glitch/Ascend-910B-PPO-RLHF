@@ -39,3 +39,12 @@ wandb/
 .idea/
 .DS_Store
 Thumbs.db
+
+# LaTeX 编译临时文件
+*.aux
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
