@@ -1,10 +1,66 @@
-# Ascend-910B-PPO-RLHF: 华为昇腾 910B 集群大模型 RLVR 强化学习全流程工程与科研套件
+<div align="center">
 
-> **项目定位**：基于国产华为昇腾 Ascend 910B3（8 卡 NPU）集群与开源 veRL 框架的 **Qwen2.5-7B-Instruct** / **0.5B** 可验证规则奖励（RLVR）强化学习后训练全流程工程与科研套件。
-> 
-> 📖 **主控总纲定位**：本文档为本开源项目的**统一主控全景大纲**。融合了**全周期工程实施指南 (D1~D4)**、**后训练理论演进与 MDP/PPO/GRPO 完整数学推导**、**四级数据清洗体系 (F1~F4)**、**三大权威代码基准全量 791 题实测大榜**、**五大奖励形态学消融与 50 步早停饱和律动力学分析**、**下一代 CAP-RLVR (VeRPO + TIPS + DHRCL) 工业级奖励设计与生产代码**、**北理工智算平台（SCOW AI / K8s）SOP** 以及 **昇腾 18 大实测踩坑宝典**。
->
-> 📄 **学术实践报告**：配套完整课程论文报告请查阅根目录下的 [**`实践报告.md`**](./实践报告.md)（含编译就绪的学术报告交付文档 [**`实践报告.pdf`**](./实践报告.pdf)）。
+# Ascend-910B-PPO-RLHF
+### 华为昇腾 910B 集群大模型 RLVR 强化学习全流程工程与科研套件
+**Production-Grade RLVR (Reinforcement Learning with Verifiable Rewards) Post-Training Suite on Huawei Ascend NPU Clusters**
+
+<p align="center">
+  <a href="https://www.hiascend.com/"><img src="https://img.shields.io/badge/Hardware-Huawei%20Ascend%20910B-red.svg" alt="Hardware"></a>
+  <a href="https://github.com/volcengine/verl"><img src="https://img.shields.io/badge/Framework-veRL%200.6.1-blue.svg" alt="veRL"></a>
+  <a href="https://github.com/vllm-project/vllm-ascend"><img src="https://img.shields.io/badge/Inference-vLLM--Ascend%200.9.1-brightgreen.svg" alt="vLLM"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python"></a>
+  <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.5.1%20NPU-EE4C2C.svg" alt="PyTorch"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-yellow.svg" alt="License"></a>
+</p>
+
+[**🌟 核心亮点**](#-核心亮点-key-highlights) | [**🚀 快速开始**](#-快速开始-quick-start) | [**📊 791 题实测榜单**](#九三大权威基准细粒度全量实测榜单-791-题) | [**💡 下一代奖励设计**](#七下一代代码-rlvr-融合奖励系统-next-gen-production-cap-rlvr) | [**📄 实践报告 (MD)**](./实践报告.md) | [**📑 实践报告 (PDF)**](./实践报告.pdf)
+
+</div>
+
+---
+
+### 🌟 核心亮点 (Key Highlights)
+
+- ⚡ **华为昇腾 910B 原生深度调优**：打通 CANN 8.1.RC1 + HCCL + PyTorch 2.5.1 NPU 软件栈，自研 [`patch_vllm_ascend.py`](./project/patch_vllm_ascend.py) 攻克 8 卡 NPU 分布式 Rollout 多卡通信组死锁缺陷；
+- 🧠 **双前沿对齐架构完整支持**：原生支持 Actor-Critic 四网络协同 PPO 与前沿 DeepSeek-R1 范式无 Critic 极速 GRPO，单卡显存大幅节省 14.1GB，吞吐翻倍（+138.9%）；
+- 🏆 **三大基准 791 题全量大满贯**：
+  - **稀疏精简冠军 (Exp 4 双目标)**：全量 791 题总通过率 **79.01% (625/791) 🥇**，宏观通过率跨越 **80.55% 🥇**，代码长度缩减 **-57.5% ⚡**（162.4 tok），致命崩溃仅 3 次；
+  - **稠密校准亚军 (VeRPO)**：引入超线性幂律校准（$\gamma=1.6$）消除基数偏差，KodCode 复杂工程题突破 **80.00% 🥈**，HumanEval 轰出 **84.76% 🏆** 并列第一；
+- 🛡️ **64 线程 CPU 原生安全隔离沙箱**：AST 静态语法扫描 + 2.0s 进程级硬超时强杀 + 全用例断言捕获，彻底杜绝神经网络打分器的 Reward Hacking；
+- 🔬 **四级工业级数据清洗体系**：15,000 道原始 KodCode 候选池经 F1 格式化 $\to$ F2 标答自洽 $\to$ F3 查重防泄漏 $\to$ F4 8 卡动态难度筛选，提炼出 4,518 题黄金探索池；
+- 📦 **下一代 CAP-RLVR 生产落地**：融合 TIPS 连续势能 PBRS、VeRPO 超线性校准与 DHRCL 三阶段课程退火，开箱即用。
+
+---
+
+### 🚀 快速开始 (Quick Start)
+
+#### 1. 环境准备 (30 秒自检)
+```bash
+# 克隆仓库
+git clone https://github.com/hujiabao200612-glitch/Ascend-910B-PPO-RLHF.git
+cd Ascend-910B-PPO-RLHF
+
+# 激活挂载盘持久虚拟环境并打入 8 卡通信补丁
+source project/envs/verl_env/bin/activate
+python3 project/patch_vllm_ascend.py
+```
+
+#### 2. 一键执行评测 (验证预训练 Checkpoints)
+```bash
+# 评测全场大满贯模型 (Exp 4 长度双目标精简版) 在 OpenAI HumanEval 上的表现
+python3 project/eval_humaneval.py \
+    --model checkpoints/d4_ablation_7b_len_efficiency_hf \
+    --output eval_results/eval_humaneval_exp4.json
+```
+
+#### 3. 一键启动 8 卡全量训练
+```bash
+# 启动 7B × 8 卡 PPO 全量主训练 (71 步，覆盖 4,518 题黄金池)
+bash project/run_ppo_7b_full.sh
+
+# 或启动 DeepSeek 范式 GRPO 极速架构消融训练
+bash project/run_grpo_7b_ablation.sh
+```
 
 ---
 
@@ -61,11 +117,12 @@
   - [10.5 第 5 步：打入 vllm-ascend 多卡通信补丁](#105-第-5-步打入-vllm-ascend-多卡通信补丁)
   - [10.6 第 6 步：日常工作循环与无人值守训练 (模式 A / B)](#106-第-6-步日常工作循环与无人值守训练-模式-a--b)
 - [十一、避坑宝典 (18 大实测已知踩坑与终极修复对照表)](#十一避坑宝典-18-大实测已知踩坑与终极修复对照表)
-- [十二、团队成员与项目分工](#十二团队成员与项目分工)
-- [十三、仓库完整目录结构、模型资产交付与一键复现指南](#十三仓库完整目录结构模型资产交付与一键复现指南)
-  - [13.1 仓库目录结构规范](#131-仓库目录结构规范)
-  - [13.2 交付模型 Checkpoints 清单](#132-交付模型-checkpoints-清单)
-  - [13.3 一键复现评测命令集](#133-一键复现评测命令集)
+- [十二、仓库完整目录结构、模型资产交付与一键复现指南](#十二仓库完整目录结构模型资产交付与一键复现指南)
+  - [12.1 仓库目录结构规范](#121-仓库目录结构规范)
+  - [12.2 交付模型 Checkpoints 清单](#122-交付模型-checkpoints-清单)
+  - [12.3 一键复现评测命令集](#123-一键复现评测命令集)
+- [十三、项目引用与开源协议 (Citation & License)](#十三项目引用与开源协议-citation--license)
+
 
 ---
 
@@ -904,22 +961,9 @@ python3 patch_vllm_ascend.py
 
 ---
 
-## 十二、团队成员与项目分工
+## 十二、仓库完整目录结构、模型资产交付与一键复现指南
 
-本项目由团队四位成员分工协作、共同推进完成，具体分工职责如下：
-
-| 成员姓名 | 核心分工职责 | 具体负责工作内容 |
-|:---|:---|:---|
-| **胡斯源** | **总体规划与算法训练** | 负责实践项目总体技术路线与架构规划、华为昇腾 910B 算力节点环境部署与 vllm-ascend 8卡通信补丁研发、veRL 分布式训练编排配置，以及 PPO / GRPO 核心强化学习算法的端到端训练与动力学调优。 |
-| **陈怡萱** | **数据清洗与测试集构建** | 负责原始代码题库数据集的深度清洗与预处理，设计并实施四级数据清洗漏斗（F1 格式规整、F2 标答沙箱自洽校验、F3 防污染去重查重、F4 8卡动态难度分档与黄金池切分），构建高质训练集与测试集体系。 |
-| **王浩宇** | **奖励函数设计与理论建模** | 负责强化学习代码规则验证器（RLVR）与奖励函数的设计、数学建模与代码实现，重点研发了 Exp 4（正确性与精简度双目标阶梯奖励）与 VeRPO（超线性连续稠密奖励），攻克长代码注水与部分分躺平问题。 |
-| **王玥** | **实验结果收集与图表绘制** | 负责三大权威基准（KodCode 独立测试集 200 题、OpenAI HumanEval 164 题、Google MBPP Sanitized 427 题）全量 791 题实验评测数据的汇总统计，以及 71 步训练曲线、学术对比双图与 6 面板监控等图表的绘制与呈现。 |
-
----
-
-## 十三、仓库完整目录结构、模型资产交付与一键复现指南
-
-### 13.1 仓库目录结构规范
+### 12.1 仓库目录结构规范
 
 ```text
 Ascend-910B-PPO-RLHF/
@@ -963,7 +1007,7 @@ Ascend-910B-PPO-RLHF/
 │       └── tests/                 # 115 项全边界单测（100% Passed）
 ```
 
-### 13.2 交付模型 Checkpoints 清单
+### 12.2 交付模型 Checkpoints 清单
 
 所有模型权重均已转为原生 HuggingFace 格式，可直接对接 Transformers、vLLM 或导出部署：
 
@@ -975,7 +1019,7 @@ Ascend-910B-PPO-RLHF/
 * **架构消融极速模型**：`checkpoints/d4_ablation_7b_grpo_hf/`（Qwen2.5-7B-Instruct-GRPO-Step50，HumanEval 83.54%，显存大幅节省 14.1GB）
 * **极致防御消融模型**：`checkpoints/d4_ablation_7b_neg_penalty_hf/`（Qwen2.5-7B-Instruct-PPO-NegPenalty-Step71，致命报错仅 2 次，HumanEval 84.76%）
 
-### 13.3 一键复现评测命令集
+### 12.3 一键复现评测命令集
 
 ```bash
 # 激活环境
@@ -1000,5 +1044,28 @@ python3 project/eval_mbpp.py \
 
 ---
 
-## 👥 快速上手与开源贡献指引
-克隆本仓库后，只需在各启动脚本或命令中将 `/data/home/<学号>/` 替换为您自己在华为昇腾智算集群中的实际挂载路径，即可无缝复现从 D1 冒烟到 D4 全量训练与跨三大基准评测的全部科研成果！
+## 十三、项目引用与开源协议 (Citation & License)
+
+### 13.1 学术引用 (BibTeX)
+如果您在学术研究、论文或工程落地中参考或使用了本项目的代码、模型权重、奖励函数设计或评测数据，欢迎引用本开源项目：
+
+```bibtex
+@misc{ascend910b_ppo_rlhf_2026,
+  author = {Ascend-910B-PPO-RLHF Project Contributors},
+  title = {Ascend-910B-PPO-RLHF: A Full-Lifecycle RLVR Post-Training Suite for LLMs on Huawei Ascend 910B Clusters},
+  year = {2026},
+  publisher = {GitHub},
+  journal = {GitHub repository},
+  howpublished = {\url{https://github.com/hujiabao200612-glitch/Ascend-910B-PPO-RLHF}}
+}
+```
+
+### 13.2 开源许可证 (License)
+- 本项目代码遵循 [Apache License 2.0](./LICENSE) 开源协议；
+- 项目中所使用的基座大模型权重遵循原始开源许可协议（如 Qwen 社区许可协议）。
+
+### 13.3 致谢与鸣谢 (Acknowledgements)
+- 感谢 [veRL (Volcano Engine)](https://github.com/volcengine/verl) 社区为大模型分布式强化学习所提供的坚实底层基础设施；
+- 感谢 [vLLM](https://github.com/vllm-project/vllm) 与 [vllm-ascend](https://github.com/vllm-project/vllm-ascend) 团队为国产昇腾生态提供的高性能连续批处理推理支持；
+- 感谢华为昇腾（Ascend CANN / HCCL）团队与智算平台对国产异构计算生态的持续建设与支持。
+
